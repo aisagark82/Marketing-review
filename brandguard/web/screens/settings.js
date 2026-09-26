@@ -3,6 +3,7 @@ import { api } from "../api.js";
 const { ref, onMounted } = Vue;
 
 export default {
+  props: { system: Object, param: String },
   setup() {
     const form = ref(null);
     const profiles = ref({});

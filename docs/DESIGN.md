@@ -27,6 +27,7 @@
 | D18 | Laptop has **16 GB RAM**. Profiles are sized for it (§5.10) | v0.6 |
 | D19 | **Phase 0 includes a working UI** (a thin slice, §12.1), not only CSV output | v0.6 |
 | D20 | Wrong source text hidden by CSS styling (typed "pfizer", shown as "Pfizer") is a **normal violation** at full severity | v0.6 |
+| D21 | Pre-flight check (built in step 2): stricter than RFC 9309 in two places. A robots.txt answering 401/403 counts as "disallow everything", and once a site shows bot protection no further requests are made. Changing a site's start URLs, domains, sitemap or robots setting withdraws the acknowledgement | step 2 |
 
 > **Note on D12:** in v0.3 you agreed to drop Redis in favour of a Postgres queue.
 > Without Docker, PostgreSQL would be a separate install and service on the laptop, so the same goal

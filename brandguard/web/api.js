@@ -9,7 +9,7 @@ async function request(method, path, body) {
   const data = response.status === 204 ? null : await response.json();
   if (!response.ok) {
     const detail = Array.isArray(data?.detail)
-      ? data.detail.map((d) => d.msg).join("; ")
+      ? data.detail.map((d) => d.msg.replace(/^Value error, /, "")).join("; ")
       : data?.detail || response.statusText;
     throw new Error(detail);
   }

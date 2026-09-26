@@ -1,9 +1,20 @@
-import { formatTime } from "../api.js";
+import { api, formatTime } from "../api.js";
+import { READINESS } from "../labels.js";
+
+const { ref, onMounted } = Vue;
 
 export default {
-  props: { system: Object },
+  props: { system: Object, param: String },
   setup() {
-    return { formatTime };
+    const sites = ref([]);
+    onMounted(async () => {
+      try {
+        sites.value = await api.get("/sites");
+      } catch {
+        sites.value = [];
+      }
+    });
+    return { formatTime, sites, READINESS };
   },
   template: `
     <div v-if="!system" class="muted">Loading…</div>
@@ -34,6 +45,20 @@ export default {
       </div>
 
       <div class="card section">
+        <h2>Sites</h2>
+        <table>
+          <tbody>
+            <tr v-for="s in sites" :key="s.id">
+              <td><a :href="'#/sites/' + s.id">{{ s.name }}</a></td>
+              <td class="muted">{{ s.start_urls[0] }}</td>
+              <td><span class="pill" :class="READINESS[s.readiness].cls">{{ READINESS[s.readiness].text }}</span></td>
+            </tr>
+            <tr v-if="!sites.length"><td class="muted">No sites configured.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card section">
         <h2>Where your data lives</h2>
         <table>
           <tbody>
@@ -47,8 +72,8 @@ export default {
       <div class="card section">
         <h2>Getting started</h2>
         <p class="muted">
-          Compliance results for www.pfizer.com will appear here once sites, crawling and rules are
-          built. To check that everything is wired up, open <a href="#/runs">Runs</a> and start a self-test.
+          Before the first crawl, open <a href="#/sites/1">pfizer.com</a> and run the pre-flight check.
+          Compliance results will appear here once crawling and rules are built (steps 3–5).
         </p>
       </div>
     </template>

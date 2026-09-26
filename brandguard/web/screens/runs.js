@@ -1,4 +1,5 @@
 import { api, formatTime } from "../api.js";
+import { ACTIVE_RUN, RUN_KINDS } from "../labels.js";
 
 const { ref, onMounted, onBeforeUnmount } = Vue;
 
@@ -10,10 +11,9 @@ const STATUS_CLASS = {
   cancelled: "",
   interrupted: "bad",
 };
-const ACTIVE = new Set(["queued", "running"]);
 
 export default {
-  props: { system: Object },
+  props: { system: Object, param: String },
   setup() {
     const runs = ref([]);
     const error = ref(null);
@@ -24,11 +24,11 @@ export default {
       const index = runs.value.findIndex((r) => r.id === run.id);
       if (index === -1) runs.value.unshift(run);
       else runs.value[index] = run;
-      if (!ACTIVE.has(run.status)) unwatch(run.id);
+      if (!ACTIVE_RUN.has(run.status)) unwatch(run.id);
     };
 
     const watch = (run) => {
-      if (!ACTIVE.has(run.status) || watchers.has(run.id)) return;
+      if (!ACTIVE_RUN.has(run.status) || watchers.has(run.id)) return;
       watchers.set(run.id, api.watchRun(run.id, upsert));
     };
 
@@ -73,7 +73,10 @@ export default {
     onMounted(load);
     onBeforeUnmount(() => [...watchers.keys()].forEach(unwatch));
 
-    return { runs, error, starting, startSelftest, cancel, percent, formatTime, STATUS_CLASS, ACTIVE };
+    return {
+      runs, error, starting, startSelftest, cancel, percent, formatTime,
+      STATUS_CLASS, ACTIVE_RUN, RUN_KINDS,
+    };
   },
   template: `
     <div class="toolbar">
@@ -94,7 +97,10 @@ export default {
           <tr v-if="!runs.length"><td colspan="7" class="muted">No runs yet.</td></tr>
           <tr v-for="run in runs" :key="run.id">
             <td>{{ run.id }}</td>
-            <td>{{ run.kind }}</td>
+            <td>
+              {{ RUN_KINDS[run.kind] || run.kind }}
+              <div v-if="run.site_name"><a :href="'#/sites/' + run.site_id" class="small">{{ run.site_name }}</a></div>
+            </td>
             <td><span class="pill" :class="STATUS_CLASS[run.status]">{{ run.status }}</span></td>
             <td>
               <div class="progress" :title="percent(run) + '%'"><div :style="{ width: percent(run) + '%' }"></div></div>
@@ -105,7 +111,7 @@ export default {
             </td>
             <td class="muted">{{ formatTime(run.started_at || run.created_at) }}</td>
             <td>
-              <button v-if="ACTIVE.has(run.status)" :disabled="run.cancel_requested" @click="cancel(run)">
+              <button v-if="ACTIVE_RUN.has(run.status)" :disabled="run.cancel_requested" @click="cancel(run)">
                 {{ run.cancel_requested ? 'Cancelling…' : 'Cancel' }}
               </button>
             </td>

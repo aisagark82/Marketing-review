@@ -6,9 +6,9 @@ metadata, images, PDFs, Office files, video and audio. The first target is check
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 
-> **Status: Phase 0, build step 1 (project skeleton).** The app starts, the UI shell works, and
-> a self-test run proves the web server → job queue → worker → database → live progress loop.
-> Sites, crawling, extraction, rules and findings come in the next steps.
+> **Status: Phase 0, build step 2 (sites and pre-flight check).** The app starts, sites can be
+> configured, and the pre-flight check reads a site's robots.txt, start page, sitemap and terms-of-use
+> links before anything is crawled. Crawling, extraction, rules and findings come in the next steps.
 
 ## Run it on Windows
 
@@ -28,6 +28,22 @@ Press **Ctrl+C** in the terminal to stop. Open **Runs → Run self-test** to che
 
 On macOS/Linux the same commands work with `python3 -m venv .venv` and `source .venv/bin/activate`.
 
+### Before the first crawl: the pre-flight check
+
+Open **Sites → pfizer.com → Run pre-flight check**. It makes a few polite requests (robots.txt,
+the home page, up to three sitemap files) and reports:
+
+- whether robots.txt allows BrandGuard, and the wait between requests the crawler will use
+- whether the start page loads, redirects out of scope, or is behind bot protection
+- how many pages the sitemap lists, with samples
+- links to the site's terms of use
+
+Read robots.txt and the terms of use yourself, then tick the box and **Acknowledge**. A site can
+only be crawled once it shows **Ready to crawl**. Changing its start URLs or allowed domains
+withdraws the acknowledgement until the check is run again.
+
+Upgrading from step 1 keeps your data: the database is migrated automatically on start.
+
 ### Commands
 
 | Command | What it does |
@@ -45,7 +61,9 @@ Set `BRANDGUARD_HOME` to keep data somewhere other than `%USERPROFILE%\BrandGuar
 brandguard/
   cli.py            setup / start / worker / version
   api/              FastAPI app and routes (REST + Server-Sent Events)
-  core/             paths, SQLite database, models, settings
+  core/             paths, SQLite database, models, migrations runner, settings, HTTP client
+  migrations/       Alembic schema migrations (applied automatically at start-up)
+  pipeline/         preflight.py (crawling, extraction and rules arrive in later steps)
   jobs/             Huey queue (SQLite file), tasks, worker process
   web/              UI: plain HTML + ES-module JS with Vue 3 (no build step)
     vendor/         third-party JS, vendored by scripts/vendor.py

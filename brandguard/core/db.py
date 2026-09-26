@@ -51,10 +51,12 @@ def _engine_for(db_path: str) -> Engine:
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
-    # Import models so their tables are registered before create_all.
-    from brandguard.core import models  # noqa: F401
+    from brandguard.core.migrate import upgrade_database
+    from brandguard.core.seed import seed_defaults
 
-    Base.metadata.create_all(engine)
+    upgrade_database(engine)
+    with Session(engine) as session, session.begin():
+        seed_defaults(session)
     return engine
 
 

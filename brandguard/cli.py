@@ -23,6 +23,8 @@ def _configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    # Alembic logs every plugin and step at INFO; core/migrate.py reports upgrades itself.
+    logging.getLogger("alembic").setLevel(logging.WARNING)
 
 
 def _initialize() -> None:

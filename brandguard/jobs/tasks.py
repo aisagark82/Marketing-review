@@ -1,7 +1,8 @@
 """Background tasks.
 
-Step 1 only has a self-test run that proves the full loop works:
-UI -> API -> queue -> worker -> database -> live progress in the UI.
+- selftest: proves the loop UI -> API -> queue -> worker -> database -> live progress
+- preflight: robots.txt / start page / sitemap / terms check for a site (design §8.1)
+
 Crawl, extract and evaluate tasks are added in later steps.
 """
 
@@ -12,9 +13,13 @@ from collections.abc import Callable
 
 from sqlalchemy import text
 
+from brandguard.core import http
 from brandguard.core.db import session_scope, utcnow
-from brandguard.core.models import Run, RunStatus
+from brandguard.core.models import Run, RunStatus, Site
 from brandguard.core.paths import get_paths
+from brandguard.core.settings import load_settings
+from brandguard.pipeline.preflight import STEPS as PREFLIGHT_STEPS
+from brandguard.pipeline.preflight import PreflightConfig, run_preflight
 
 log = logging.getLogger(__name__)
 
@@ -68,15 +73,22 @@ def _finish(run_id: int, status: str, **fields) -> None:
             setattr(run, name, value)
 
 
-def selftest(run_id: int) -> None:
+def _start(run_id: int, total: int) -> bool:
+    """Mark the run as running; False if it no longer exists or was cancelled while queued."""
     with session_scope() as session:
         run = session.get(Run, run_id)
         if run is None or run.status in RunStatus.TERMINAL:
-            return
+            return False
         run.status = RunStatus.RUNNING
         run.started_at = utcnow()
-        run.total = len(SELFTEST_STEPS) * TICKS_PER_STEP
+        run.total = total
         run.done = 0
+        return True
+
+
+def selftest(run_id: int) -> None:
+    if not _start(run_id, len(SELFTEST_STEPS) * TICKS_PER_STEP):
+        return
 
     try:
         for index, step in enumerate(SELFTEST_STEPS):
@@ -94,4 +106,49 @@ def selftest(run_id: int) -> None:
         _finish(run_id, RunStatus.COMPLETED, step=None, message="All checks passed")
 
 
-TASKS: dict[str, Callable] = {"selftest": selftest}
+def preflight(run_id: int) -> None:
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        site = run.site if run else None
+        if site is None:
+            return
+        contact = load_settings(session).crawler_contact_email
+        config = PreflightConfig(
+            start_urls=list(site.start_urls),
+            allowed_domains=list(site.allowed_domains),
+            use_sitemap=site.use_sitemap,
+            respect_robots=site.respect_robots,
+            request_interval_s=site.request_interval_s,
+            user_agent=http.user_agent(site.independent, contact),
+        )
+        site_id = site.id
+        fingerprint = site.fingerprint()
+    if not _start(run_id, len(PREFLIGHT_STEPS)):
+        return
+
+    def progress(step: str, done: int, total: int) -> None:
+        _update(run_id, step=step, done=done, total=total, message=f"Checking {step}")
+
+    try:
+        with http.make_http_client(config.user_agent) as client:
+            result = run_preflight(config, client, progress=progress)
+    except _Cancelled:
+        _finish(run_id, RunStatus.CANCELLED, message="Cancelled by user")
+        return
+    except Exception as exc:
+        log.exception("Pre-flight run %s failed", run_id)
+        _finish(run_id, RunStatus.FAILED, error=str(exc), message="Pre-flight check failed")
+        return
+
+    with session_scope() as session:
+        site = session.get(Site, site_id)
+        site.preflight_result = result
+        site.preflight_at = utcnow()
+        # Checked against the config as it was when the check started; if the user edited
+        # the site meanwhile, the result shows as stale.
+        site.preflight_fingerprint = fingerprint
+        site.preflight_acknowledged_at = None
+    _finish(run_id, RunStatus.COMPLETED, step=None, message=result["summary"])
+
+
+TASKS: dict[str, Callable] = {"selftest": selftest, "preflight": preflight}

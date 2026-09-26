@@ -3,6 +3,7 @@ import OverviewScreen from "./screens/overview.js";
 import PlaceholderScreen from "./screens/placeholder.js";
 import RunsScreen from "./screens/runs.js";
 import SettingsScreen from "./screens/settings.js";
+import SitesScreen from "./screens/sites.js";
 
 const { createApp, ref, computed, onMounted, onBeforeUnmount } = Vue;
 
@@ -14,8 +15,7 @@ const ROUTES = [
   { id: "findings", label: "Findings", step: 5,
     about: "Every place the brand name is misspelled, with filters, CSV export and the evidence viewer." },
   { id: "runs", label: "Runs", component: RunsScreen },
-  { id: "sites", label: "Sites", step: 2,
-    about: "Configure www.pfizer.com and run the pre-flight check of robots.txt and the terms of use." },
+  { id: "sites", label: "Sites", component: SitesScreen },
   { id: "rules", label: "Rules", step: 4,
     about: "The Pfizer brand-name rule: allowed casings, disallowed spellings, exceptions and a test sandbox." },
   { id: "settings", label: "Settings", component: SettingsScreen },
@@ -26,13 +26,15 @@ const SYSTEM_POLL_MS = 5000;
 const App = {
   setup() {
     const currentId = ref("overview");
+    const param = ref(null); // e.g. "1" in #/sites/1
     const system = ref(null);
     const systemError = ref(null);
     let timer = null;
 
     const syncRoute = () => {
-      const id = location.hash.replace(/^#\/?/, "");
+      const [id, ...rest] = location.hash.replace(/^#\/?/, "").split("/");
       currentId.value = ROUTES.some((r) => r.id === id) ? id : "overview";
+      param.value = rest.join("/") || null;
     };
 
     const loadSystem = async () => {
@@ -64,7 +66,7 @@ const App = {
         : { cls: "warn", text: "Worker offline" };
     });
 
-    return { routes: ROUTES, route, system, workerPill, PlaceholderScreen };
+    return { routes: ROUTES, route, param, system, workerPill, PlaceholderScreen };
   },
   template: `
     <div class="layout">
@@ -86,7 +88,7 @@ const App = {
           <span class="pill" :class="workerPill.cls">{{ workerPill.text }}</span>
         </header>
         <main class="content">
-          <component v-if="route.component" :is="route.component" :system="system" />
+          <component v-if="route.component" :is="route.component" :system="system" :param="param" />
           <component v-else :is="PlaceholderScreen" :route="route" />
         </main>
       </div>
