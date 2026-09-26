@@ -179,6 +179,7 @@ class Asset(Base):
     language: Mapped[str | None] = mapped_column(String(35))  # <html lang>, as declared by the page
     content_sha256: Mapped[str | None] = mapped_column(String(64))
     html_path: Mapped[str | None] = mapped_column(Text)  # relative to the data folder
+    file_path: Mapped[str | None] = mapped_column(Text)  # downloaded file (PDF ...), same folder
     screenshot_path: Mapped[str | None] = mapped_column(Text)
     info: Mapped[dict | None] = mapped_column(JSON)  # page size, segment counts, timings
     fetched_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
@@ -204,3 +205,63 @@ class Segment(Base):
     render_transform: Mapped[str | None] = mapped_column(String(20))  # CSS text-transform
     locator: Mapped[dict | None] = mapped_column(JSON)  # selector, bbox, JSON path ...
     extractor: Mapped[str] = mapped_column(String(40))
+
+
+class Rule(Base):
+    """A brand rule; `config` is validated by the rule type (see brandguard/rules/)."""
+
+    __tablename__ = "rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey("brands.id"), index=True)
+    key: Mapped[str] = mapped_column(String(50))  # e.g. BRAND-NAME-001
+    name: Mapped[str] = mapped_column(String(200))
+    type: Mapped[str] = mapped_column(String(40))
+    severity: Mapped[str] = mapped_column(String(10), default="high")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    config: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
+class RuleVersion(Base):
+    """Every saved version of a rule, so each finding can say which version produced it."""
+
+    __tablename__ = "rule_versions"
+    __table_args__ = (UniqueConstraint("rule_id", "version", name="uq_rule_versions"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rule_id: Mapped[int] = mapped_column(ForeignKey("rules.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    severity: Mapped[str] = mapped_column(String(10))
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    config: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class FindingStatus:
+    VIOLATION = "violation"
+    AMBIGUOUS = "ambiguous"  # e.g. a near-miss spelling; Gemini reviews these in step 6
+
+
+class Finding(Base):
+    __tablename__ = "findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)  # the crawl run
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    segment_id: Mapped[int] = mapped_column(
+        ForeignKey("segments.id", ondelete="CASCADE"), index=True
+    )
+    rule_id: Mapped[int] = mapped_column(ForeignKey("rules.id"))
+    rule_version: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(30))  # casing, disallowed, split, near_miss, ...
+    status: Mapped[str] = mapped_column(String(15))
+    severity: Mapped[str] = mapped_column(String(10))
+    matched_text: Mapped[str] = mapped_column(Text)
+    expected: Mapped[str | None] = mapped_column(Text)
+    start: Mapped[int] = mapped_column(Integer)  # character offsets in the segment text
+    end: Mapped[int] = mapped_column(Integer)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

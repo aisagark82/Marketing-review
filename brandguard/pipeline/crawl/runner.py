@@ -14,6 +14,7 @@ from brandguard.pipeline.crawl.browser import chromium_executable
 from brandguard.pipeline.crawl.discovery import discover
 from brandguard.pipeline.crawl.policy import CrawlPolicy, Pacer
 from brandguard.pipeline.crawl.recorder import CrawlSettings, CrawlSink
+from brandguard.pipeline.files import process_pdfs
 
 
 @dataclass
@@ -79,8 +80,13 @@ class ResourceSampler:
         }
 
 
-def execute_crawl(config: CrawlConfig, on_status=None) -> tuple[dict, str | None]:
-    """Crawl a site; returns (statistics, stop reason). Raises RobotsUnavailable."""
+def execute_crawl(
+    config: CrawlConfig, on_status=None, is_cancelled=None
+) -> tuple[dict, str | None]:
+    """Crawl a site's pages, then download and read its PDFs.
+
+    Returns (statistics, stop reason). Raises RobotsUnavailable.
+    """
     adapter = get_adapter(config.crawler)
     pacer = Pacer(config.request_interval_s)
     policy = CrawlPolicy(config.allowed_domains, config.include_patterns, config.exclude_patterns)
@@ -115,11 +121,36 @@ def execute_crawl(config: CrawlConfig, on_status=None) -> tuple[dict, str | None
     started = time.monotonic()
     with ResourceSampler() as sampler:
         asyncio.run(adapter.run(found.seeds, sink, browser))
+        pages_runtime = time.monotonic() - started
+
+        documents: dict = {}
+        if sink.stop_reason not in ("blocked", "cancelled"):
+            if on_status:
+                on_status("Downloading and reading PDFs")
+
+            def progress(done: int, total: int) -> None:
+                if on_status:
+                    on_status(f"Reading PDFs: {done} of {total}")
+
+            with http.make_http_client(config.user_agent) as client:
+                documents = process_pdfs(
+                    config.run_id,
+                    client,
+                    policy,
+                    pacer,
+                    config.data_dir,
+                    should_stop=lambda: bool(is_cancelled and is_cancelled()),
+                    on_progress=progress,
+                )
+            if is_cancelled and is_cancelled():
+                sink.stop_reason = "cancelled"
 
     stats = (
         sink.snapshot()
         | sampler.result()
         | {
+            "documents": documents,
+            "pages_runtime_s": round(pages_runtime, 1),
             "crawler": config.crawler,
             "crawler_version": adapter.version(),
             "runtime_s": round(time.monotonic() - started, 1),

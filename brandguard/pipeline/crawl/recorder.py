@@ -42,7 +42,7 @@ class CrawlCounters:
     errors: list[str] = field(default_factory=list)
 
 
-def _store(data_dir: Path, folder: str, content: bytes, suffix: str) -> tuple[str, str]:
+def store_file(data_dir: Path, folder: str, content: bytes, suffix: str) -> tuple[str, str]:
     """Content-addressed file under the data folder; short names keep Windows paths short."""
     digest = hashlib.sha256(content).hexdigest()
     relative = Path(folder) / digest[:2] / f"{digest}{suffix}"
@@ -178,14 +178,14 @@ class CrawlSink:
 
         asset.status = AssetStatus.OK
         if capture.html:
-            asset.content_sha256, asset.html_path = _store(
+            asset.content_sha256, asset.html_path = store_file(
                 self.settings.data_dir,
                 "pages",
                 gzip.compress(capture.html.encode("utf-8")),
                 ".html.gz",
             )
         if capture.screenshot:
-            _, asset.screenshot_path = _store(
+            _, asset.screenshot_path = store_file(
                 self.settings.data_dir, "screenshots", capture.screenshot, ".jpg"
             )
         session.flush()  # asset.id for the rows below

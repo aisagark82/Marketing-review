@@ -3,6 +3,14 @@
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from tests.pdfs import make_pdf
+
+REPORT_PDF = make_pdf(
+    [["Example Pharma Annual Review", "At Phizer we believe in science."]],
+    title="Example Pharma Review",
+    author="Example Pharma",
+)
+
 
 def page(title: str, body: str) -> bytes:
     head = f"<!doctype html><html lang='en'><head><title>{title}</title></head>"
@@ -53,6 +61,7 @@ class LocalSite:
             ),
             "/about": (200, html, page("About", "<p>About Example Pharma</p><a href='/'>Home</a>")),
             "/news": (200, html, page("News", "<p>News from Example Pharma</p>")),
+            "/files/report.pdf": (200, "application/pdf", REPORT_PDF),
             "/logo.png": (
                 200,
                 "image/svg+xml",

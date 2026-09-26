@@ -280,3 +280,18 @@ select { width: auto; }
 .segments li:hover { background: var(--surface-2); }
 .segments li.selected { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
 @media (max-width: 900px) { .evidence { grid-template-columns: 1fr; } }
+
+/* Step 4: rules, sandbox and findings */
+mark { border-radius: 3px; padding: 0 2px; color: inherit; }
+mark.violation { background: var(--bad-bg); box-shadow: inset 0 -2px 0 var(--bad); }
+mark.ambiguous { background: var(--warn-bg); box-shadow: inset 0 -2px 0 var(--warn); }
+.prose { font-family: inherit; font-size: 14px; line-height: 1.6; }
+textarea.prose { font-family: inherit; }
+.tested { padding: 10px 0; border-top: 1px solid var(--border); }
+.locale-row { display: grid; grid-template-columns: 90px 1fr 1fr auto; gap: 10px; align-items: end; }
+@media (max-width: 700px) { .locale-row { grid-template-columns: 1fr; } }
+pre.yaml { max-height: 70vh; }
+label.button { display: inline-block; }
+.finding-line { font-size: 12px; margin-top: 4px; }
+.findings-card .cards > div { padding: 4px 0; }
+.findings-card .title-row { justify-content: space-between; }

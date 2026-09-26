@@ -6,10 +6,10 @@ metadata, images, PDFs, Office files, video and audio. The first target is check
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 
-> **Status: Phase 0, build step 3 (crawling).** Sites can be configured, pre-flight checked and
-> crawled with **Crawlee** or **Crawl4AI**. Every page's text is extracted (visible, hidden and
-> metadata) with a screenshot, and files (PDFs, Office, images, video) are listed. Downloading
-> those files, the brand-name rule and findings come in the next steps.
+> **Status: Phase 0, build step 4 (PDFs and the brand-name rule).** Sites are crawled with
+> **Crawlee** or **Crawl4AI**; page text (visible, hidden, metadata) and PDF text are checked
+> against the **"Pfizer" spelling rule**, which you can edit and test in **Rules**. The findings
+> list and evidence viewer (step 5) and Gemini (step 6) come next.
 
 ## Run it on Windows
 
@@ -59,6 +59,26 @@ What the crawler does, whichever library runs it:
 - opens accordions and `<details>` before reading, and records text hidden by CSS as **hidden**
 - stops after three refusals in a row (403/429/challenge pages) and reports the run as **blocked**
 
+After the pages, the crawl downloads the site's PDFs (same pace and rules, up to 200 per crawl,
+50 MB each) and reads their text, properties and bookmarks. Pages without a text layer (scans)
+are listed as needing OCR. Finally every piece of text is checked against the brand rules, and
+the run page shows the findings.
+
+### The brand-name rule
+
+**Rules → Brand name: Pfizer** holds the settings from the design: correct spelling "Pfizer",
+allowed letter cases (Pfizer, PFIZER), known misspellings, near-miss detection (e.g. "Pfzier"),
+what isn't checked (web addresses, emails, domains, file names, @handles, #hashtags), and
+local-script names per market (ファイザー, 辉瑞, 輝瑞). Every save is a new version.
+
+- **Test** checks pasted text or an uploaded PDF with the form's settings, before you save
+- **YAML** shows the rule as a file you can download
+- **Re-evaluate with current rules** (on a crawl's page) applies the latest version without crawling again
+
+What gets reported: wrong letter case (`pfizer`, `PFizer`), known misspellings (`Phizer`), the
+name split in two (`Pfi zer`), possible misspellings to review (`Pfzier`), and another market's
+local name on a page.
+
 Upgrading from an earlier step keeps your data: the database is migrated automatically on start.
 
 ### Commands
@@ -82,7 +102,9 @@ brandguard/
   core/             paths, SQLite database, models, migrations runner, settings, HTTP client
   migrations/       Alembic schema migrations (applied automatically at start-up)
   pipeline/         preflight.py; crawl/ (policy, discovery, walker.js, capture, recorder,
-                    adapters for Crawlee and Crawl4AI, runner)
+                    adapters for Crawlee and Crawl4AI, runner); files.py and extract/pdf.py
+                    (PDFs); evaluate.py (findings)
+  rules/            brand_name.py (the rule), defaults.py (Pfizer), service.py (versions, YAML)
   jobs/             Huey queue (SQLite file), tasks, worker process
   web/              UI: plain HTML + ES-module JS with Vue 3 (no build step)
     vendor/         third-party JS, vendored by scripts/vendor.py

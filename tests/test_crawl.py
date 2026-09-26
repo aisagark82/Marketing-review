@@ -63,8 +63,9 @@ def test_crawl_extracts_pages_and_respects_scope(crawler, run_id):
     assert found[f"{o}/missing"].http_status == 404
     assert found[f"{o}/leave"].status_reason == "redirected_third_party"
     assert found[f"{o}/private/area"].status_reason == "robots"
-    assert found[f"{o}/files/report.pdf"].status == "discovered"
-    assert found[f"{o}/files/report.pdf"].kind == "pdf"
+    report = found[f"{o}/files/report.pdf"]
+    assert (report.kind, report.status, report.title) == ("pdf", "ok", "Example Pharma Review")
+    assert (get_paths().data_dir / report.file_path).read_bytes().startswith(b"%PDF")
     assert found[f"{o}/logo.png"].kind == "image"
     assert found["https://social.example.net/pharma"].status_reason == "third_party"
 
@@ -96,6 +97,7 @@ def test_crawl_extracts_pages_and_respects_scope(crawler, run_id):
     assert stats["files"] == {"image": 1, "pdf": 1}
     assert stats["skipped"]["robots"] == 1
     assert stats["seeds"]["from_sitemap"] == 1  # /news; the home page was already a start URL
+    assert stats["documents"] == {"ok": 1, "needs_ocr": 0, "found": 1}
     assert stats["peak_rss_mb"] > 0
     assert stats["segments"]["visible"] >= 4
 

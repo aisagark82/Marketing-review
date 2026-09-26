@@ -185,9 +185,15 @@ def crawl(run_id: int) -> None:
         return
     _update(run_id, step="discovery", message="Reading robots.txt and the sitemap")
 
+    def cancelled() -> bool:
+        with session_scope() as session:
+            return session.get(Run, run_id).cancel_requested
+
     try:
         stats, stop_reason = execute_crawl(
-            config, on_status=lambda message: _update(run_id, step="crawl", message=message)
+            config,
+            on_status=lambda message: _update(run_id, step="crawl", message=message),
+            is_cancelled=cancelled,
         )
     except _Cancelled:
         _finish(run_id, RunStatus.CANCELLED, message="Cancelled by user")
@@ -207,11 +213,11 @@ def crawl(run_id: int) -> None:
         )
         return
 
-    pages = stats["pages"]
-    summary = (
-        f"{pages.get('ok', 0)} pages crawled, {sum(stats['files'].values())} files found, "
-        f"{sum(stats['segments'].values())} text segments"
-    )
+    if stop_reason != "cancelled":
+        _update(run_id, step="evaluate", message="Checking the text against the brand rules")
+        stats["findings"] = _evaluate(run_id)
+
+    summary = _crawl_summary(stats)
     if stop_reason == "cancelled":
         _finish(run_id, RunStatus.CANCELLED, stats=stats, message=f"Cancelled. {summary}")
     elif stop_reason == "blocked":
@@ -225,4 +231,69 @@ def crawl(run_id: int) -> None:
         _finish(run_id, RunStatus.COMPLETED, step=None, stats=stats, message=summary)
 
 
-TASKS: dict[str, Callable] = {"selftest": selftest, "preflight": preflight, "crawl": crawl}
+def _crawl_summary(stats: dict) -> str:
+    pages = stats["pages"].get("ok", 0)
+    pdfs = stats.get("documents", {}).get("ok", 0)
+    segments = sum(stats["segments"].values())
+    text = f"{pages} pages and {pdfs} PDFs read, {segments} text segments"
+    findings = stats.get("findings")
+    if findings:
+        text += f"; {findings['violations']} violations, {findings['ambiguous']} to review"
+    return text
+
+
+def _evaluate(crawl_run_id: int, progress_run_id: int | None = None) -> dict:
+    from brandguard.pipeline.evaluate import evaluate_run
+
+    progress_run_id = progress_run_id or crawl_run_id
+
+    def progress(done: int, total: int) -> None:
+        _update(progress_run_id, message=f"Checking text: {done} of {total} pages and files")
+
+    return evaluate_run(crawl_run_id, on_progress=progress)
+
+
+def evaluate(run_id: int) -> None:
+    """Re-check an earlier crawl with the current rules (e.g. after editing a rule)."""
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            return
+        crawl_run_id = run.params["crawl_run_id"]
+    if not _start(run_id, 1):
+        return
+    try:
+        findings = _evaluate(crawl_run_id, progress_run_id=run_id)
+    except _Cancelled:
+        _finish(run_id, RunStatus.CANCELLED, message="Cancelled by user")
+        return
+    except Exception as exc:
+        log.exception("Evaluation run %s failed", run_id)
+        _finish(
+            run_id,
+            RunStatus.FAILED,
+            error=f"{type(exc).__name__}: {exc}",
+            message="Evaluation failed",
+        )
+        return
+    with session_scope() as session:
+        crawl_run = session.get(Run, crawl_run_id)
+        crawl_run.stats = (crawl_run.stats or {}) | {"findings": findings}
+        crawl_run.message = _crawl_summary(crawl_run.stats)
+    _finish(
+        run_id,
+        RunStatus.COMPLETED,
+        step=None,
+        done=1,
+        stats={"findings": findings},
+        message=f"{findings['violations']} violations, {findings['ambiguous']} to review "
+        f"in {findings['segments_checked']} text segments",
+    )
+
+
+TASKS: dict[str, Callable] = {
+    "selftest": selftest,
+    "preflight": preflight,
+    "crawl": crawl,
+    "evaluate": evaluate,
+}

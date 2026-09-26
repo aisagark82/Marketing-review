@@ -12,6 +12,7 @@ export const RUN_KINDS = {
   selftest: "Self-test",
   preflight: "Pre-flight check",
   crawl: "Crawl",
+  evaluate: "Re-evaluation",
 };
 
 export const ACTIVE_RUN = new Set(["queued", "running"]);
@@ -54,4 +55,12 @@ export const VISIBILITY = {
   hidden: { text: "Hidden", cls: "warn" },
   metadata: { text: "Metadata", cls: "" },
   spoken: { text: "Spoken", cls: "" },
+};
+
+export const FINDING_KINDS = {
+  casing: "Wrong letter case",
+  disallowed: "Known misspelling",
+  split: "Name split in two",
+  near_miss: "Possible misspelling",
+  wrong_market_form: "Another market's name",
 };

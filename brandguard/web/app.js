@@ -2,6 +2,7 @@ import { api } from "./api.js";
 import OverviewScreen from "./screens/overview.js";
 import PlaceholderScreen from "./screens/placeholder.js";
 import RunsScreen from "./screens/runs.js";
+import RulesScreen from "./screens/rules.js";
 import SettingsScreen from "./screens/settings.js";
 import SitesScreen from "./screens/sites.js";
 
@@ -16,8 +17,7 @@ const ROUTES = [
     about: "Every place the brand name is misspelled, with filters, CSV export and the evidence viewer." },
   { id: "runs", label: "Runs", component: RunsScreen },
   { id: "sites", label: "Sites", component: SitesScreen },
-  { id: "rules", label: "Rules", step: 4,
-    about: "The Pfizer brand-name rule: allowed casings, disallowed spellings, exceptions and a test sandbox." },
+  { id: "rules", label: "Rules", component: RulesScreen },
   { id: "settings", label: "Settings", component: SettingsScreen },
 ];
 
