@@ -95,6 +95,10 @@ def _rows(session: Session, run_id: int) -> list[dict]:
                 "confidence": finding.confidence,
                 "rule_id": finding.rule_id,
                 "rule_version": finding.rule_version,
+                "ai_verdict": finding.ai_verdict,
+                "ai_reason": finding.ai_reason,
+                "ai_suggestion": finding.ai_suggestion,
+                "ai_model": finding.ai_model,
                 "asset": {"id": finding.asset_id, "url": url, "title": title, "kind": asset_kind},
                 "segment": {
                     "id": finding.segment_id,
@@ -218,6 +222,7 @@ def compliance(session: Session, run: Run) -> dict:
         "assets_with_violations": len(violations_per_asset),
         "violations": len(violations),
         "to_review": sum(1 for r in rows if r["status"] == FindingStatus.AMBIGUOUS),
+        "dismissed": sum(1 for r in rows if r["status"] == FindingStatus.DISMISSED),
         "by_visibility": dict(Counter(r["segment"]["visibility"] for r in violations)),
         "by_asset_kind": dict(Counter(r["asset"]["kind"] for r in violations)),
         "by_source": dict(Counter(r["segment"]["source"] for r in violations).most_common(10)),
@@ -326,6 +331,13 @@ def evidence(session: Session, data_dir: Path, finding: Finding) -> dict:
     segment = session.get(Segment, finding.segment_id)
     locator = segment.locator or {}
     result: dict = {"live_url": asset.final_url or asset.url, "asset_kind": asset.kind}
+    if asset.kind == "image":
+        result["image"] = {
+            "path": asset.file_path,
+            "line": locator.get("line"),
+            "found_on_id": asset.found_on_id,
+        }
+        return result
     if asset.kind == "pdf":
         result["pdf"] = {
             "file_path": asset.file_path,

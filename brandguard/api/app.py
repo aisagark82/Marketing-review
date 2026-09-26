@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from brandguard import __version__
-from brandguard.api.routes import crawl, findings, rules, runs, settings, sites, system
+from brandguard.api.routes import ai, crawl, findings, rules, runs, settings, sites, system
 from brandguard.core.paths import get_paths
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -26,7 +26,7 @@ for _type, _ext in (
 
 def create_app() -> FastAPI:
     app = FastAPI(title="BrandGuard", version=__version__, docs_url="/api/docs")
-    for module in (system, runs, sites, crawl, rules, findings, settings):
+    for module in (system, runs, sites, crawl, rules, findings, settings, ai):
         app.include_router(module.router, prefix="/api")
     # Screenshots and page snapshots from the data folder (read-only), for the evidence views.
     paths = get_paths()

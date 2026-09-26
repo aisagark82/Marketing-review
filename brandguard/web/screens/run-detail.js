@@ -50,6 +50,15 @@ const StatsCards = {
           <span v-if="stats.documents.over_file_limit"> · {{ stats.documents.over_file_limit }} over the limit</span>
         </div>
       </div>
+      <div class="card" v-if="stats.images?.found">
+        <div class="label">Images</div>
+        <div class="value">{{ stats.images.ok || 0 }} read</div>
+        <div class="muted small">
+          of {{ stats.images.found }} found · {{ stats.images.with_text || 0 }} with text
+          <span v-if="stats.images.too_small"> · {{ stats.images.too_small }} too small</span>
+          <span v-if="stats.images.over_image_limit"> · {{ stats.images.over_image_limit }} over the limit</span>
+        </div>
+      </div>
       <div class="card">
         <div class="label">Text segments</div>
         <div class="value">{{ sum(stats.segments) }}</div>
@@ -82,7 +91,7 @@ const StatsCards = {
 };
 
 const FindingsCard = {
-  props: { findings: Object, runId: Number, canReevaluate: Boolean },
+  props: { findings: Object, ai: Object, runId: Number, canReevaluate: Boolean },
   emits: ["reevaluated"],
   setup(props, { emit }) {
     const busy = ref(false);
@@ -110,7 +119,7 @@ const FindingsCard = {
       <div class="cards">
         <div><div class="label">Violations</div><div class="value">{{ findings.violations }}</div></div>
         <div><div class="label">To review</div><div class="value">{{ findings.ambiguous }}</div>
-          <div class="muted small">possible misspellings</div></div>
+          <div class="muted small">possible misspellings<span v-if="findings.dismissed"> · {{ findings.dismissed }} dismissed by Gemini</span></div></div>
         <div><div class="label">Pages and files affected</div><div class="value">{{ findings.assets_with_findings }}</div>
           <div class="muted small">of {{ findings.assets_checked }} checked</div></div>
       </div>
@@ -124,6 +133,16 @@ const FindingsCard = {
           <ul class="plain"><li v-for="[text, n] in findings.top_matches" :key="text">“{{ text }}” × {{ n }}</li></ul>
         </div>
       </div>
+      <p v-if="ai" class="small">
+        <template v-if="ai.enabled">
+          Gemini ({{ ai.model }}) reviewed {{ ai.review?.candidates || 0 }} possible misspelling(s):
+          {{ ai.review?.misspelling || 0 }} confirmed, {{ ai.review?.not_brand || 0 }} dismissed,
+          {{ ai.review?.unsure || 0 }} unsure<span v-if="ai.review?.from_cache">, {{ ai.review.from_cache }} answered from earlier reviews</span>.
+          <span v-if="ai.images"> Text in images was read too.</span>
+        </template>
+        <span v-else class="muted">Gemini review off: {{ ai.reason }}.</span>
+        <span v-if="ai.error" class="error-text"> Gemini stopped: {{ ai.error }}</span>
+      </p>
       <p class="muted small">
         Rules: <span v-for="r in findings.rules" :key="r.id"><a :href="'#/rules/' + r.id">{{ r.key }}</a> version {{ r.version }} </span>
         · {{ findings.segments_checked }} text segments checked
@@ -148,7 +167,7 @@ const AssetTable = {
     watch([view, q], () => { offset.value = 0; load(); });
     watch(offset, load);
     load();
-    const openable = (asset) => asset.status === "ok" && ["page", "pdf"].includes(asset.kind);
+    const openable = (asset) => asset.status === "ok" && ["page", "pdf", "image"].includes(asset.kind);
     const open = (asset) => {
       if (openable(asset)) location.hash = `#/runs/${props.runId}/assets/${asset.id}`;
     };
@@ -252,6 +271,9 @@ export const AssetView = {
         They need OCR, which arrives in a later step, so their text isn't checked yet.
       </p>
       <div class="evidence">
+        <div class="card" v-if="asset.kind === 'image' && asset.file_path">
+          <img class="evidence-image" :src="'/files/' + asset.file_path" alt="The downloaded image" />
+        </div>
         <div class="shot card" v-if="asset.screenshot_path">
           <div class="shot-scroll">
             <img ref="img" :src="'/files/' + asset.screenshot_path" @load="onImage" alt="Page screenshot" />
@@ -353,13 +375,13 @@ export default {
       </div>
       <p v-if="run.error" class="error-text">{{ run.error }}</p>
       <template v-if="run.kind === 'crawl' && run.stats">
-        <FindingsCard v-if="run.stats.findings" :findings="run.stats.findings" :run-id="run.id" :can-reevaluate="!active" />
+        <FindingsCard v-if="run.stats.findings" :findings="run.stats.findings" :ai="run.stats.ai" :run-id="run.id" :can-reevaluate="!active" />
         <StatsCards :stats="run.stats" />
         <AssetTable v-if="!active" :run-id="run.id" />
       </template>
       <template v-if="run.kind === 'evaluate'">
         <p>Re-checked <a :href="'#/runs/' + run.params.crawl_run_id">crawl #{{ run.params.crawl_run_id }}</a> with the current rules.</p>
-        <FindingsCard v-if="run.stats?.findings" :findings="run.stats.findings" :run-id="run.params.crawl_run_id" />
+        <FindingsCard v-if="run.stats?.findings" :findings="run.stats.findings" :ai="run.stats.ai" :run-id="run.params.crawl_run_id" />
       </template>
     </template>
   `,

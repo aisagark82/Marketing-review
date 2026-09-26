@@ -20,7 +20,8 @@ export const ComplianceSummary = {
       <StatTile label="Pages and PDFs without a high-severity violation" :value="c.clean_share + '%'"
                 :detail="(c.assets_checked - c.assets_with_violations) + ' of ' + c.assets_checked + ' fully clean'" />
       <StatTile label="Violations" :value="c.violations" :detail="c.assets_with_violations + ' pages or PDFs affected'" />
-      <StatTile label="To review" :value="c.to_review" detail="possible misspellings" />
+      <StatTile label="To review" :value="c.to_review"
+                :detail="'possible misspellings' + (c.dismissed ? ' · ' + c.dismissed + ' dismissed by Gemini' : '')" />
       <StatTile v-if="changes.previous_run_id" label="Since the previous crawl"
                 :value="'+' + changes.new + ' / −' + changes.fixed"
                 :detail="changes.new + ' new, ' + changes.fixed + ' fixed, ' + changes.persisting + ' still there'" />

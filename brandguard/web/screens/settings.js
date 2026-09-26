@@ -1,8 +1,10 @@
 import { api } from "../api.js";
+import GeminiSettings from "./gemini-settings.js";
 
 const { ref, onMounted } = Vue;
 
 export default {
+  components: { GeminiSettings },
   props: { system: Object, param: String },
   setup() {
     const form = ref(null);
@@ -60,15 +62,12 @@ export default {
         <div class="hint">Included in the crawler's User-Agent so site operators can reach you.</div>
       </div>
 
-      <div class="card">
-        <h2>Gemini</h2>
-        <p class="muted">API key, model (gemini-2.5-flash) and connection test arrive in build step 6.</p>
-      </div>
 
       <div class="toolbar">
         <button class="primary" type="submit" :disabled="saving">Save settings</button>
         <span v-if="message" class="muted">{{ message }}</span>
       </div>
     </form>
+    <GeminiSettings />
   `,
 };

@@ -1,12 +1,13 @@
 import { api, formatTime } from "../api.js";
 import {
-  ASSET_KINDS, CHANGE, CRAWLERS, FINDING_KINDS, FINDING_STATUS, VISIBILITY, sourceLabel,
+  AI_VERDICTS, ASSET_KINDS, CHANGE, CRAWLERS, FINDING_KINDS, FINDING_STATUS, VISIBILITY, sourceLabel,
 } from "../labels.js";
 import { Highlighted } from "./rules.js";
 
 const { ref, computed, watch, onMounted, nextTick } = Vue;
 
 const PAGE_SIZE = 50;
+const ASSET_NOUN = { page: "Page", pdf: "PDF", image: "Image" };
 const EXCERPT = 70;
 const FACETS = {
   status: { label: "Status", names: (v) => FINDING_STATUS[v]?.text || v },
@@ -271,17 +272,40 @@ const SnippetEvidence = {
   `,
 };
 
+const ImageEvidence = {
+  props: { image: Object },
+  template: `
+    <div class="label">The image, as downloaded</div>
+    <img class="evidence-image" :src="'/files/' + image.path" alt="Image the text was read from" />
+    <p class="muted small">Text line {{ image.line }} read from this image.</p>
+  `,
+};
+
 export const EvidenceView = {
-  components: { Highlighted, ScreenshotEvidence, PdfEvidence, SnippetEvidence },
+  components: { Highlighted, ScreenshotEvidence, PdfEvidence, SnippetEvidence, ImageEvidence },
   props: { findingId: Number },
   setup(props) {
     const f = ref(null);
     const error = ref(null);
+    const asking = ref(false);
     const load = async () => {
       try { f.value = await api.get(`/findings/${props.findingId}`); } catch (e) { error.value = e.message; }
     };
+    const askGemini = async () => {
+      asking.value = true;
+      error.value = null;
+      try {
+        await api.post(`/ai/findings/${props.findingId}/review`);
+        await load();
+      } catch (e) {
+        error.value = e.message;
+      } finally {
+        asking.value = false;
+      }
+    };
     load();
-    return { f, error, sourceLabel, FINDING_KINDS, FINDING_STATUS, VISIBILITY, CHANGE, CRAWLERS };
+    return { f, error, asking, askGemini, sourceLabel, ASSET_NOUN, FINDING_KINDS, FINDING_STATUS, VISIBILITY, CHANGE,
+             CRAWLERS, AI_VERDICTS };
   },
   template: `
     <p v-if="error" class="error-text">{{ error }}</p>
@@ -293,7 +317,8 @@ export const EvidenceView = {
         <a v-if="f.next_id" class="button" :href="'#/findings/' + f.next_id">Next →</a>
       </div>
       <div class="title-row">
-        <h2 class="page-title">{{ FINDING_KINDS[f.kind] || f.kind }}</h2>
+        <h2 class="page-title">{{ f.kind === 'near_miss' && f.ai_verdict === 'misspelling'
+          ? 'Misspelling (confirmed by Gemini)' : (FINDING_KINDS[f.kind] || f.kind) }}</h2>
         <span class="pill" :class="FINDING_STATUS[f.status]?.cls">{{ FINDING_STATUS[f.status]?.text }}</span>
         <span class="pill">{{ f.severity }} severity</span>
         <span v-if="f.change" class="pill" :class="CHANGE[f.change].cls">{{ CHANGE[f.change].text }}</span>
@@ -302,10 +327,11 @@ export const EvidenceView = {
         <div class="card">
           <ScreenshotEvidence v-if="f.evidence.screenshot" :shot="f.evidence.screenshot" />
           <PdfEvidence v-if="f.evidence.pdf" :pdf="f.evidence.pdf" />
+          <ImageEvidence v-if="f.evidence.image" :image="f.evidence.image" />
           <div :class="{ section: f.evidence.screenshot }">
             <SnippetEvidence v-if="f.evidence.snippet" :snippet="f.evidence.snippet" :matched="f.matched_text" />
           </div>
-          <p v-if="!f.evidence.screenshot && !f.evidence.pdf && !f.evidence.snippet" class="muted">
+          <p v-if="!f.evidence.screenshot && !f.evidence.pdf && !f.evidence.snippet && !f.evidence.image" class="muted">
             No picture of this spot was saved; the text is shown on the right.
           </p>
         </div>
@@ -320,7 +346,7 @@ export const EvidenceView = {
               <span class="pill" :class="VISIBILITY[f.segment.visibility]?.cls">{{ VISIBILITY[f.segment.visibility]?.text }}</span>
               {{ sourceLabel(f.segment.source) }}<span v-if="f.segment.locator?.page"> · PDF page {{ f.segment.locator.page }}</span>
             </dd>
-            <dt>{{ f.asset.kind === 'pdf' ? 'PDF' : 'Page' }}</dt>
+            <dt>{{ ASSET_NOUN[f.asset.kind] || 'Page' }}</dt>
             <dd>{{ f.asset.title || '(no title)' }}<br />
               <a :href="f.evidence.live_url" target="_blank" rel="noopener" class="mono">{{ f.evidence.live_url }}</a></dd>
             <dt>Rule</dt>
@@ -328,12 +354,22 @@ export const EvidenceView = {
               <span v-if="f.rule.current_version !== f.rule_version" class="muted">(current: {{ f.rule.current_version }})</span></dd>
             <dt>Crawl</dt>
             <dd><a :href="'#/runs/' + f.run.id">#{{ f.run.id }}</a> · {{ f.run.site_name }} · {{ CRAWLERS[f.run.crawler]?.label }}
-              · <a :href="'#/runs/' + f.run.id + '/assets/' + f.asset.id">all text of this {{ f.asset.kind === 'pdf' ? 'PDF' : 'page' }}</a></dd>
+              · <a :href="'#/runs/' + f.run.id + '/assets/' + f.asset.id">all text of this {{ (ASSET_NOUN[f.asset.kind] || 'page').toLowerCase() }}</a></dd>
             <dt>Confidence</dt><dd>{{ Math.round(f.confidence * 100) }}%</dd>
           </dl>
-          <p v-if="f.status === 'ambiguous'" class="banner section">
-            This is a possible misspelling. Gemini will help review these in a later step.
-          </p>
+          <div v-if="f.ai_verdict" class="ai-verdict section">
+            <div class="label">{{ AI_VERDICTS[f.ai_verdict] || f.ai_verdict }}</div>
+            <p>{{ f.ai_reason }}</p>
+            <p v-if="f.ai_suggestion" class="small">Suggested: <em>{{ f.ai_suggestion }}</em></p>
+            <p class="muted small">{{ f.ai_model }}</p>
+          </div>
+          <div v-if="f.status === 'ambiguous'" class="banner section">
+            This is a possible misspelling.
+            <template v-if="!f.ai_verdict">Gemini reviews these after each crawl when an API key is set.</template>
+            <div class="toolbar" style="margin-top: 8px">
+              <button :disabled="asking" @click="askGemini">{{ asking ? 'Asking…' : 'Ask Gemini now' }}</button>
+            </div>
+          </div>
         </div>
       </div>
     </template>

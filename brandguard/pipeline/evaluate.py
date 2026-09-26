@@ -41,20 +41,11 @@ def evaluate_run(
         page_language = {a.id: a.language for a in assets}
         session.execute(delete(Finding).where(Finding.run_id == crawl_run_id))
 
-    summary = {
-        "assets_checked": 0,
-        "segments_checked": 0,
-        "violations": 0,
-        "ambiguous": 0,
-        "assets_with_findings": 0,
-    }
-    by = {name: Counter() for name in ("kind", "severity", "visibility", "asset_kind")}
-    top = Counter()
-
+    segments_checked = 0
     for index, asset in enumerate(assets):
         if on_progress and index % 20 == 0:
             on_progress(index, len(assets))
-        # A PDF has no declared language; use the page that linked to it.
+        # PDFs and images have no declared language; use the page that linked to them.
         language = asset.language or page_language.get(asset.found_on_id)
         rows = []
         with session_scope() as session:
@@ -63,6 +54,7 @@ def evaluate_run(
                     Segment.asset_id == asset.id
                 )
             ).all()
+            segments_checked += len(segments)
             for segment in segments:
                 if segment.visibility == Visibility.SPOKEN:
                     continue  # speech is checked for mentions, not spelling (design §5.5)
@@ -87,26 +79,45 @@ def evaluate_run(
                                 "created_at": utcnow(),
                             }
                         )
-                        by["kind"][match.kind] += 1
-                        by["severity"][match.severity] += 1
-                        by["visibility"][segment.visibility] += 1
-                        by["asset_kind"][asset.kind] += 1
-                        if match.status == FindingStatus.VIOLATION:
-                            summary["violations"] += 1
-                            top[match.matched] += 1
-                        else:
-                            summary["ambiguous"] += 1
             if rows:
                 session.execute(insert(Finding), rows)
-                summary["assets_with_findings"] += 1
-        summary["assets_checked"] += 1
-        summary["segments_checked"] += len(segments)
 
-    return (
-        summary
-        | {f"by_{name}": dict(counter) for name, counter in by.items()}
-        | {
-            "top_matches": top.most_common(TOP_MATCHES),
-            "rules": rules_used,
-        }
-    )
+    return summarize_findings(crawl_run_id) | {
+        "assets_checked": len(assets),
+        "segments_checked": segments_checked,
+        "rules": rules_used,
+    }
+
+
+def summarize_findings(crawl_run_id: int) -> dict:
+    """Counts for the run page, read back from the stored findings (so they reflect Gemini's
+    later verdicts too). The "by_" breakdowns count every finding, whatever its status."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(
+                Finding.asset_id,
+                Finding.kind,
+                Finding.status,
+                Finding.severity,
+                Finding.matched_text,
+                Segment.visibility,
+                Asset.kind,
+            )
+            .join(Segment, Finding.segment_id == Segment.id)
+            .join(Asset, Finding.asset_id == Asset.id)
+            .where(Finding.run_id == crawl_run_id)
+        ).all()
+    statuses = Counter(r[2] for r in rows)
+    return {
+        "violations": statuses[FindingStatus.VIOLATION],
+        "ambiguous": statuses[FindingStatus.AMBIGUOUS],
+        "dismissed": statuses[FindingStatus.DISMISSED],
+        "assets_with_findings": len({r[0] for r in rows if r[2] != FindingStatus.DISMISSED}),
+        "by_kind": dict(Counter(r[1] for r in rows if r[2] != FindingStatus.DISMISSED)),
+        "by_severity": dict(Counter(r[3] for r in rows if r[2] != FindingStatus.DISMISSED)),
+        "by_visibility": dict(Counter(r[5] for r in rows if r[2] != FindingStatus.DISMISSED)),
+        "by_asset_kind": dict(Counter(r[6] for r in rows if r[2] != FindingStatus.DISMISSED)),
+        "top_matches": Counter(r[4] for r in rows if r[2] == FindingStatus.VIOLATION).most_common(
+            TOP_MATCHES
+        ),
+    }

@@ -6,11 +6,10 @@ metadata, images, PDFs, Office files, video and audio. The first target is check
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 
-> **Status: Phase 0, build step 5 (findings, evidence and dashboards).** Sites are crawled with
-> **Crawlee** or **Crawl4AI**; page and PDF text is checked against the **"Pfizer" spelling rule**.
-> **Findings** lists every problem with filters and CSV export, each with its evidence;
-> **Compliance** and **Overview** show the score and compare the two crawlers. Gemini (step 6)
-> and testing on Windows (step 7) come next.
+> **Status: Phase 0, build step 6 (Gemini).** Sites are crawled with **Crawlee** or **Crawl4AI**;
+> page, PDF and (optionally) image text is checked against the **"Pfizer" spelling rule**, and
+> **Gemini** reviews the possible misspellings. Findings, evidence and dashboards show the results.
+> Testing on Windows and measuring (step 7) comes next.
 
 ## Run it on Windows
 
@@ -94,6 +93,24 @@ local name on a page.
 - **Overview**: the latest results and **Crawlee vs Crawl4AI** side by side (pages, files,
   text found, violations, time, memory, CPU, and pages only one of them reached).
 
+### Gemini
+
+**Settings → Gemini**: paste your Google AI Studio API key (kept in Windows Credential Manager;
+never shown again), pick the model (`gemini-2.5-flash` by default) and **Test connection**. Then:
+
+- **Review possible misspellings** (on by default): after each crawl or re-evaluation, Gemini
+  looks at every "to review" finding in context and **confirms** it (it becomes a violation),
+  **dismisses** it (e.g. a surname like "Pfitzer"), or leaves it **unsure**. Its reason and a
+  suggested fix appear on the finding; **Ask Gemini now** reviews a single finding.
+- **Read text in images** (off by default): the crawl also downloads the site's images (same
+  pace and rules, visible images first, up to the limit you set) and Gemini transcribes their
+  text exactly, so misspellings in banners and logos are found. SVG text is read without Gemini.
+- **Limits and cost**: requests per minute and per day (Gemini steps pause, the crawl doesn't
+  fail), and a usage table with an estimated cost. Answers are cached, so re-evaluating a crawl
+  doesn't pay twice.
+
+Only public page text and images are sent to Gemini.
+
 Upgrading from an earlier step keeps your data: the database is migrated automatically on start.
 
 ### Commands
@@ -121,6 +138,8 @@ brandguard/
                     (PDFs); evaluate.py (findings)
   rules/            brand_name.py (the rule), defaults.py (Pfizer), service.py (versions, YAML)
   reporting.py      scores, findings with changes between crawls, evidence, crawler comparison
+  ai/               Gemini: config.py (settings, API key), llm.py (the one adapter: limits,
+                    retries, logging, cache), prompts.py, judge.py (reviews), images.py
   jobs/             Huey queue (SQLite file), tasks, worker process
   web/              UI: plain HTML + ES-module JS with Vue 3 (no build step)
     vendor/         third-party JS, vendored by scripts/vendor.py

@@ -68,6 +68,7 @@ export const FINDING_KINDS = {
 export const FINDING_STATUS = {
   violation: { text: "Violation", cls: "bad" },
   ambiguous: { text: "To review", cls: "warn" },
+  dismissed: { text: "Dismissed by Gemini", cls: "" },
 };
 
 export const CHANGE = {
@@ -83,6 +84,7 @@ const SOURCES = {
   "attr:alt": "Image alt text", "attr:title": "Tooltip (title)", "attr:aria-label": "Accessibility label",
   "attr:aria-description": "Accessibility description", "attr:placeholder": "Placeholder",
   pdf_text: "PDF text", pdf_bookmark: "PDF bookmark", pasted: "Pasted text",
+  image_text: "Text in an image",
 };
 
 export function sourceLabel(source) {
@@ -92,4 +94,10 @@ export function sourceLabel(source) {
   return source;
 }
 
-export const ASSET_KINDS = { page: "Web pages", pdf: "PDFs" };
+export const ASSET_KINDS = { page: "Web pages", pdf: "PDFs", image: "Images" };
+
+export const AI_VERDICTS = {
+  misspelling: "Gemini: a misspelling of the brand name",
+  not_brand: "Gemini: not the brand name",
+  unsure: "Gemini: unsure",
+};

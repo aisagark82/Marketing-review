@@ -14,3 +14,14 @@ async def launch(playwright):
 
 
 __all__ = ["async_playwright", "launch"]
+
+
+def require_chromium() -> None:
+    """Skip the calling test when no Chromium can be launched."""
+    import asyncio
+
+    async def check():
+        async with async_playwright() as playwright:
+            await (await launch(playwright)).close()
+
+    asyncio.run(check())

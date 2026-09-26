@@ -1,3 +1,5 @@
+import keyring
+import keyring.backend
 import pytest
 from fastapi.testclient import TestClient
 
@@ -31,3 +33,30 @@ def immediate_queue():
 def client():
     with TestClient(create_app()) as test_client:
         yield test_client
+
+
+class MemoryKeyring(keyring.backend.KeyringBackend):
+    """Stands in for the OS keychain, so tests never touch the real one."""
+
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self.store = {}
+
+    def get_password(self, service, username):
+        return self.store.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.store[(service, username)] = password
+
+    def delete_password(self, service, username):
+        self.store.pop((service, username), None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_keychain():
+    previous = keyring.get_keyring()
+    keyring.set_keyring(MemoryKeyring())
+    yield
+    keyring.set_keyring(previous)

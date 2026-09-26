@@ -35,7 +35,7 @@ def test_step1_database_is_upgraded_in_place(brandguard_home):
         legacy.executescript(STEP1_SCHEMA)
 
     with get_engine().connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005"
         run = connection.execute(text("SELECT kind, message, site_id FROM runs")).one()
         assert tuple(run) == ("selftest", "All checks passed", None)
         assert connection.scalar(text("SELECT name FROM brands")) == "Pfizer"

@@ -14,11 +14,15 @@ from collections.abc import Callable
 
 from sqlalchemy import text
 
+from brandguard.ai.config import load_ai_settings
+from brandguard.ai.images import image_text_reader
+from brandguard.ai.llm import open_gemini
 from brandguard.core import http
 from brandguard.core.db import session_scope, utcnow
 from brandguard.core.models import Run, RunStatus, Site
 from brandguard.core.paths import get_paths
 from brandguard.core.settings import load_settings
+from brandguard.pipeline.evaluate import summarize_findings
 from brandguard.pipeline.preflight import STEPS as PREFLIGHT_STEPS
 from brandguard.pipeline.preflight import PreflightConfig, run_preflight
 
@@ -181,6 +185,14 @@ def crawl(run_id: int) -> None:
             user_agent=http.user_agent(site.independent, contact),
             data_dir=get_paths().data_dir,
         )
+        ai_settings = load_ai_settings(session)
+        gemini = open_gemini(session)
+        config.max_images = ai_settings.max_images_per_crawl
+    read_images = (
+        image_text_reader(gemini, run_id)
+        if gemini is not None and ai_settings.read_images and ai_settings.max_images_per_crawl
+        else None
+    )
     if not _start(run_id, config.max_pages):
         return
     _update(run_id, step="discovery", message="Reading robots.txt and the sitemap")
@@ -194,6 +206,7 @@ def crawl(run_id: int) -> None:
             config,
             on_status=lambda message: _update(run_id, step="crawl", message=message),
             is_cancelled=cancelled,
+            read_image_text=read_images,
         )
     except _Cancelled:
         _finish(run_id, RunStatus.CANCELLED, message="Cancelled by user")
@@ -216,6 +229,9 @@ def crawl(run_id: int) -> None:
     if stop_reason != "cancelled":
         _update(run_id, step="evaluate", message="Checking the text against the brand rules")
         stats["findings"] = _evaluate(run_id)
+        stats["ai"] = _ai_review(run_id, run_id, gemini, ai_settings, cancelled)
+        stats["ai"]["images"] = bool(read_images)
+        stats["findings"] |= summarize_findings(run_id)  # after Gemini's verdicts
 
     summary = _crawl_summary(stats)
     if stop_reason == "cancelled":
@@ -231,6 +247,36 @@ def crawl(run_id: int) -> None:
         _finish(run_id, RunStatus.COMPLETED, step=None, stats=stats, message=summary)
 
 
+def _ai_review(crawl_run_id: int, progress_run_id: int, gemini, ai_settings, cancelled) -> dict:
+    """Gemini decides the findings still "to review". Failures pause this step, not the run."""
+    from brandguard.ai.judge import review_findings
+    from brandguard.ai.llm import AILimitReached, AIResponseError, AIUnavailable
+
+    if gemini is None:
+        return {"enabled": False, "reason": "No Gemini API key (Settings)"}
+    if not ai_settings.review_near_misses:
+        return {"enabled": False, "reason": "Reviewing possible misspellings is switched off"}
+
+    def progress(done: int, total: int) -> None:
+        _update(
+            progress_run_id,
+            step="ai",
+            message=f"Gemini is reviewing possible misspellings: {done} of {total}",
+        )
+
+    result = {"enabled": True, "model": gemini.model}
+    try:
+        result["review"] = review_findings(
+            gemini, crawl_run_id, on_progress=progress, should_stop=cancelled
+        )
+    except (AILimitReached, AIUnavailable, AIResponseError) as exc:
+        result["error"] = str(exc)
+    except Exception as exc:  # e.g. a Gemini service error after retries
+        log.exception("Gemini review failed for run %s", crawl_run_id)
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
 def _crawl_summary(stats: dict) -> str:
     pages = stats["pages"].get("ok", 0)
     pdfs = stats.get("documents", {}).get("ok", 0)
@@ -239,6 +285,10 @@ def _crawl_summary(stats: dict) -> str:
     findings = stats.get("findings")
     if findings:
         text += f"; {findings['violations']} violations, {findings['ambiguous']} to review"
+        if findings.get("dismissed"):
+            text += f", {findings['dismissed']} dismissed by Gemini"
+    if stats.get("ai", {}).get("error"):
+        text += f" (Gemini: {stats['ai']['error']})"
     return text
 
 
@@ -260,10 +310,19 @@ def evaluate(run_id: int) -> None:
         if run is None:
             return
         crawl_run_id = run.params["crawl_run_id"]
+        ai_settings = load_ai_settings(session)
+        gemini = open_gemini(session)
     if not _start(run_id, 1):
         return
+
+    def cancelled() -> bool:
+        with session_scope() as session:
+            return session.get(Run, run_id).cancel_requested
+
     try:
         findings = _evaluate(crawl_run_id, progress_run_id=run_id)
+        ai = _ai_review(crawl_run_id, run_id, gemini, ai_settings, cancelled)
+        findings |= summarize_findings(crawl_run_id)
     except _Cancelled:
         _finish(run_id, RunStatus.CANCELLED, message="Cancelled by user")
         return
@@ -278,14 +337,15 @@ def evaluate(run_id: int) -> None:
         return
     with session_scope() as session:
         crawl_run = session.get(Run, crawl_run_id)
-        crawl_run.stats = (crawl_run.stats or {}) | {"findings": findings}
+        ai = ai | {"images": (crawl_run.stats or {}).get("ai", {}).get("images", False)}
+        crawl_run.stats = (crawl_run.stats or {}) | {"findings": findings, "ai": ai}
         crawl_run.message = _crawl_summary(crawl_run.stats)
     _finish(
         run_id,
         RunStatus.COMPLETED,
         step=None,
         done=1,
-        stats={"findings": findings},
+        stats={"findings": findings, "ai": ai},
         message=f"{findings['violations']} violations, {findings['ambiguous']} to review "
         f"in {findings['segments_checked']} text segments",
     )

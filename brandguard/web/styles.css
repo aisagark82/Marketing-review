@@ -335,3 +335,12 @@ label.button { display: inline-block; }
 .compare td.num { font-variant-numeric: tabular-nums; }
 select { max-width: 100%; }
 .card > table td { overflow-wrap: anywhere; }
+
+/* Step 6: Gemini */
+.ai-verdict { border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; }
+.ai-verdict p { margin: 4px 0; }
+.evidence-image { display: block; max-width: 100%; max-height: 60vh; border: 1px solid var(--border); border-radius: 6px; background: repeating-conic-gradient(var(--surface-2) 0 25%, var(--surface) 0 50%) 0 0 / 16px 16px; }
+input[type="password"] {
+  font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--text);
+}

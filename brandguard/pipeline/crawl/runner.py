@@ -14,7 +14,7 @@ from brandguard.pipeline.crawl.browser import chromium_executable
 from brandguard.pipeline.crawl.discovery import discover
 from brandguard.pipeline.crawl.policy import CrawlPolicy, Pacer
 from brandguard.pipeline.crawl.recorder import CrawlSettings, CrawlSink
-from brandguard.pipeline.files import process_pdfs
+from brandguard.pipeline.files import process_images, process_pdfs
 
 
 @dataclass
@@ -35,6 +35,7 @@ class CrawlConfig:
     stop_on_blocks: bool = True
     user_agent: str = ""
     data_dir: Path = Path(".")
+    max_images: int = 100
 
 
 class ResourceSampler:
@@ -81,9 +82,10 @@ class ResourceSampler:
 
 
 def execute_crawl(
-    config: CrawlConfig, on_status=None, is_cancelled=None
+    config: CrawlConfig, on_status=None, is_cancelled=None, read_image_text=None
 ) -> tuple[dict, str | None]:
-    """Crawl a site's pages, then download and read its PDFs.
+    """Crawl a site's pages, then download and read its PDFs (and images, if read_image_text
+    is given: a function (bytes, MIME type) -> lines of text).
 
     Returns (statistics, stop reason). Raises RobotsUnavailable.
     """
@@ -124,6 +126,7 @@ def execute_crawl(
         pages_runtime = time.monotonic() - started
 
         documents: dict = {}
+        images: dict = {}
         if sink.stop_reason not in ("blocked", "cancelled"):
             if on_status:
                 on_status("Downloading and reading PDFs")
@@ -142,6 +145,25 @@ def execute_crawl(
                     should_stop=lambda: bool(is_cancelled and is_cancelled()),
                     on_progress=progress,
                 )
+                if read_image_text is not None and not (is_cancelled and is_cancelled()):
+                    if on_status:
+                        on_status("Reading text in images")
+
+                    def image_progress(done: int, total: int) -> None:
+                        if on_status:
+                            on_status(f"Reading text in images: {done} of {total}")
+
+                    images = process_images(
+                        config.run_id,
+                        client,
+                        policy,
+                        pacer,
+                        config.data_dir,
+                        read_image_text,
+                        config.max_images,
+                        should_stop=lambda: bool(is_cancelled and is_cancelled()),
+                        on_progress=image_progress,
+                    )
             if is_cancelled and is_cancelled():
                 sink.stop_reason = "cancelled"
 
@@ -150,6 +172,7 @@ def execute_crawl(
         | sampler.result()
         | {
             "documents": documents,
+            "images": images,
             "pages_runtime_s": round(pages_runtime, 1),
             "crawler": config.crawler,
             "crawler_version": adapter.version(),

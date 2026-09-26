@@ -241,7 +241,8 @@ class RuleVersion(Base):
 
 class FindingStatus:
     VIOLATION = "violation"
-    AMBIGUOUS = "ambiguous"  # e.g. a near-miss spelling; Gemini reviews these in step 6
+    AMBIGUOUS = "ambiguous"  # e.g. a near-miss spelling, until Gemini (or a person) decides
+    DISMISSED = "dismissed"  # reviewed: not a misspelling of the brand name
 
 
 class Finding(Base):
@@ -264,4 +265,37 @@ class Finding(Base):
     end: Mapped[int] = mapped_column(Integer)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     note: Mapped[str | None] = mapped_column(Text)
+    # Gemini's review of a finding that was "to review" (verdict, reason, suggested fix).
+    ai_verdict: Mapped[str | None] = mapped_column(String(20))
+    ai_reason: Mapped[str | None] = mapped_column(Text)
+    ai_suggestion: Mapped[str | None] = mapped_column(Text)
+    ai_model: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class AICall(Base):
+    """One Gemini request: for the usage panel, limits and cost estimates."""
+
+    __tablename__ = "ai_calls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stage: Mapped[str] = mapped_column(String(30))  # judge, image_text, test
+    model: Mapped[str] = mapped_column(String(80))
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), index=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+
+
+class AICache(Base):
+    """Answers keyed by model + prompt + input, so re-evaluating a crawl costs nothing twice."""
+
+    __tablename__ = "ai_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(30))
+    response: Mapped[Any] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
