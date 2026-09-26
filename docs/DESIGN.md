@@ -1,103 +1,124 @@
-# Brand Compliance Review Platform — Solution Design (Draft v0.1)
+# Brand Compliance Review Platform — Solution Design (Draft v0.2)
 
-> Status: **design iteration**, no code yet. Open questions are in [§12](#12-open-questions-for-iteration).
+> Status: **design iteration**, no code yet. Open questions are in [§13](#13-open-questions).
+
+### Changes since v0.1
+
+| Area | Decision |
+|---|---|
+| AI | **Google Gemini** is the primary LLM, with all its settings managed in the UI. Local Ollama is still an optional provider |
+| Crawling | Compared browser MCPs (Chrome DevTools MCP, Playwright MCP) and AI-native crawlers (Crawl4AI and others). Decision: crawl with Playwright directly; give the browser MCP to the AI assistant only ([§5.1](#51-crawling--is-there-a-modern-alternative-like-chrome-mcp)) |
+| Scale | Not a concern: simplified deployment (fewer services) |
+| Brands | Multiple brands can be configured; the first release ships with one |
+| Languages | Multilingual: English, Chinese (Simplified and Traditional), Japanese, Spanish, German, and others via config |
+| Content scope | **Every kind of content**: visible text, hidden text and metadata, text inside images, documents, videos and audio (on-screen and spoken), and non-text assets (logos, images) |
+| Out of scope | Third-party embeds (YouTube, social media and so on) and anything behind a login |
+| Results | **No triage workflow** (no assign or approve). Results are read-only, shown in **evaluation and compliance dashboards** with drill-down and export |
+| Frontend | Explained how Vue relates to plain HTML and JS ([§5.9](#59-frontend--is-vue-the-same-as-html--js)) |
+
+---
 
 ## 1. Goal
 
-Automatically crawl a configured list of public websites, extract **all** content and assets
-(HTML text, images, PDFs incl. scanned, Office files, video, audio, embedded data), and
-evaluate every piece of content against configurable **brand-guideline rules**.
-First rule: **brand name must be used correctly**.
-
-A web UI manages the whole lifecycle: configuration → orchestration → evaluation →
-findings triage → reporting, with an AI assistant built in.
-
-**Constraints**
-
-| Constraint | Implication |
-|---|---|
-| Open source / free first | Every default component is OSS with a permissive license; paid/hosted options are opt-in plugins |
-| Frontend: JS + HTML | No TypeScript requirement; plain JS framework or vanilla |
-| Backend: Python | Crawling, extraction, rules, API all in Python |
-| Public, good-quality assets | Lightweight OCR/ASR is enough; no enterprise IDP tools |
-
----
+For each configured **brand**, crawl its configured public websites and extract every asset
+and every piece of text in any form. Evaluate all of it against that brand's configurable rules
+(the first rule is the **brand name**, in every configured language), and present the results
+in compliance dashboards.
 
 ## 2. High-level architecture
 
 ```mermaid
 flowchart LR
-  subgraph UI["Web UI (JS/HTML)"]
-    CFG[Sites & Rules config]
-    ORC[Runs / Scheduler]
-    FND[Findings & Evidence viewer]
-    RPT[Dashboards & Reports]
-    AST[AI Assistant]
+  subgraph UI["Web UI (HTML + JS / Vue)"]
+    B[Brands & Rules]
+    S[Sites]
+    R[Runs / Scheduler]
+    D[Compliance dashboards<br/>& evidence viewer]
+    A[AI Assistant]
+    ST[Settings<br/>Gemini, OCR, languages]
   end
 
-  UI <-->|REST + SSE/WebSocket| API[FastAPI backend]
+  UI <-->|REST + SSE| API[FastAPI backend]
+  API --> DB[(PostgreSQL + pgvector)]
+  API --> Q[[Task queue]]
 
-  API --> DB[(PostgreSQL<br/>config, runs, assets,<br/>segments, findings)]
-  API --> Q[[Task queue<br/>Redis/Valkey]]
+  Q --> C[Crawler<br/>Playwright]
+  Q --> X[Extractors<br/>Docling · OCR · ffmpeg · Whisper]
+  Q --> E[Rule engine<br/>deterministic + Gemini]
 
-  Q --> W1[Crawl workers<br/>Crawlee / Playwright]
-  Q --> W2[Extraction workers<br/>text · PDF · Office · OCR]
-  Q --> W3[Media workers<br/>ffmpeg · Whisper · keyframe OCR]
-  Q --> W4[Rule engine workers<br/>deterministic + LLM]
+  C & X --> FS[(File store<br/>assets, screenshots, frames)]
+  C & X & E --> DB
 
-  W1 --> OBJ[(Object store<br/>raw assets, screenshots)]
-  W2 --> OBJ
-  W3 --> OBJ
-  W1 & W2 & W3 & W4 --> DB
-
-  W4 --> LLM[Local LLM<br/>Ollama]
-  AST --> LLM
-  AST --> VEC[(Vector index<br/>pgvector)]
+  E --> G[Gemini API]
+  A --> G
+  A -. optional tools .-> MCP[Playwright / Chrome DevTools MCP]
+  X -. optional fallback .-> G
 ```
 
-### Pipeline (per run)
+### Pipeline (per run, per site)
 
 ```
-Discover ─▶ Fetch ─▶ Classify ─▶ Extract ─▶ Normalize ─▶ Evaluate ─▶ Aggregate ─▶ Notify
- (sitemap,   (HTML,    (MIME,     (text,     (Segments    (rules →    (scores,     (UI, email,
-  links,      render,   scanned?)  OCR, ASR)  with         Findings)   diffs vs     webhook)
-  embeds)     assets)                          locators)                last run)
+Discover ─▶ Fetch & render ─▶ Classify ─▶ Extract ─▶ Detect language ─▶ Normalize ─▶ Evaluate ─▶ Score
+(sitemap,    (page, screenshot, (MIME,      (all text   (per segment)       (per-language   (rules,     (dashboards,
+ links,       same-domain       scanned?,   forms, see                      normalization)  Gemini on   run diff)
+ assets)      assets)           language)   §5.2)                                           ambiguous)
 ```
 
-Each stage is an idempotent task keyed by **content hash**, so re-runs only reprocess
-changed assets (incremental review).
+Each step is keyed by **content hash**, so re-runs only reprocess changed assets. Changing a rule
+re-evaluates the stored text without crawling the sites again.
 
 ---
 
 ## 3. Configuration model
 
-Config lives in the DB (edited through the UI) and is **import/exportable as YAML** so it
-can also be version-controlled in git. Every run records the exact config version it used.
+Everything is edited in the UI and can be **imported/exported as YAML**. Each run records
+the config version it used.
 
-### 3.1 Sites (`sites.yaml`)
+### 3.1 Brands → Sites → Rule sets
+
+```
+Brand ─1:N─ Site
+  └──1:N─ RuleSet ─1:N─ Rule
+  └──1:N─ BrandTerm (canonical name + per-locale forms)
+```
+
+```yaml
+brands:
+  - id: acme
+    name: Acme
+    locales: [en, zh-Hans, zh-Hant, ja, es, de]
+    terms:
+      - id: product-cloud
+        canonical: "AcmeCloud"                 # Latin form used in every locale unless overridden
+        trademark_symbol: "®"
+        localized:                             # approved local forms (optional)
+          ja:      { approved: ["AcmeCloud", "アクメクラウド"] }
+          zh-Hans: { approved: ["AcmeCloud", "爱克云"] }
+          zh-Hant: { approved: ["AcmeCloud", "愛克雲"] }
+          de:      { approved: ["AcmeCloud"], allow_compounds: true }   # "AcmeCloud-Lösung"
+        disallowed: ["Acme Cloud", "Acme-Cloud", "ACMECLOUD", "Acmecloud",
+                     "アクメ・クラウド", "爱克雲"]                        # mixed-script error
+    rule_sets: [brand-core]
+```
+
+### 3.2 Sites
 
 ```yaml
 sites:
-  - id: acme-main
-    name: Acme Corporate
+  - id: acme-global
+    brand: acme
     start_urls: [https://www.acme.com/]
     use_sitemap: true
-    scope:
-      allowed_domains: [acme.com, cdn.acme.com]
-      include: ["^/products/.*", "^/about/.*"]
-      exclude: ["^/careers/apply.*", "\\?sessionid="]
-      max_depth: 5
-      max_pages: 5000
-    render_js: auto            # auto | always | never
-    asset_types: [html, image, pdf, office, video, audio]
-    follow_embeds: [youtube, vimeo]   # third-party embedded media
-    politeness: { rps: 2, respect_robots: true, user_agent: "AcmeBrandAudit/1.0" }
-    schedule: "0 2 * * 1"      # weekly, Mon 02:00
-    rule_sets: [brand-core]
-    locale: en
+    allowed_domains: [acme.com, cdn.acme.com]   # same-org domains only; third-party embeds are skipped
+    include: ["^/(en|ja|zh-cn|zh-tw|es|de)/.*"]
+    exclude: ["\\?sessionid=", "^/account/.*"]
+    locale_hint_from_url: true                   # /ja/... → expect Japanese
+    render_js: auto
+    politeness: { rps: 2, respect_robots: true }
+    schedule: "0 2 * * 1"
 ```
 
-### 3.2 Rules (`rules.yaml`)
+### 3.3 Rules
 
 ```yaml
 rule_sets:
@@ -105,212 +126,213 @@ rule_sets:
     rules:
       - id: BRAND-NAME-001
         type: brand_name
+        terms: [product-cloud]
         severity: high
-        applies_to: [all]                 # or [html, pdf, image, video, ...]
-        canonical: "AcmeCloud"
-        allowed_variants: ["AcmeCloud®", "AcmeCloud's"]
-        disallowed_variants: ["Acme Cloud", "Acme-Cloud", "ACMECLOUD", "Acmecloud"]
+        applies_to: [all]                  # all asset types and text sources
+        text_sources: [all]                # or: visible, metadata, alt, ocr, asr, doc_props, ...
         case_sensitive: true
-        fuzzy:
-          enabled: true
-          max_edit_distance: 2            # catches "AcmeCluod", "AcemCloud"
-          min_similarity: 0.85
-        exceptions:
-          - context_regex: "https?://\\S+"  # ignore URLs / emails
-          - context_regex: "@acmecloud"     # social handles
-        trademark:
-          require_symbol_on_first_use: true
-          symbol: "®"
-        llm_review: on_ambiguous         # off | on_ambiguous | always
+        fuzzy: { enabled: true, max_edit_distance: 2, min_similarity: 0.85 }   # Latin scripts
+        cjk:   { char_ngram_match: true }                                     # CJK scripts
+        exceptions: [urls, emails, social_handles, code]
+        trademark: { require_symbol_on_first_use: true, per: asset }
+        llm_review: on_ambiguous           # off | on_ambiguous | always   (uses Gemini)
 ```
 
-Rule types are **plugins** (Python classes registered by `type`). Planned types:
-
-| Type | Example | Engine |
-|---|---|---|
-| `brand_name` | spelling, casing, spacing, ® usage | deterministic + fuzzy |
-| `forbidden_terms` | competitor names, deprecated product names | keyword / regex |
-| `required_text` | legal disclaimer on product pages / PDFs | presence check |
-| `tone_of_voice` | "no superlatives without claim" | LLM |
-| `visual_logo` | outdated logo, wrong logo colors (later) | image similarity / VLM |
-| `color_palette` | CSS / image colors outside palette (later) | CSS parse + k-means |
-| `typography` | non-approved font families (later) | computed CSS via Playwright |
-| `metadata` | page title / og:site_name contains brand | DOM |
+Rule types are plugins; `brand_name` is built first. Planned later: `forbidden_terms`,
+`required_text` (disclaimers), `tone_of_voice` (LLM), `logo` (visual), `color_palette`, `typography`.
 
 ---
 
 ## 4. Core data model
 
 ```
-Site ─1:N─ Run ─1:N─ Asset ─1:N─ Segment ─1:N─ Finding ─N:1─ Rule
-                       │
-                       └─ parent_asset (e.g. image inside PDF, frame inside video)
+Brand ─ Site ─ Run ─ Asset ─ Segment ─ Finding ─ Rule
+                       └─ parent_asset (image inside PDF, frame inside video, ...)
 ```
 
 | Entity | Key fields |
 |---|---|
-| **Asset** | url, source_page_url, mime, sha256, size, fetched_at, http_status, storage_key, parent_asset_id, extraction_status |
-| **Segment** | asset_id, text, **locator**, extractor (`dom`, `pdf-text`, `ocr`, `asr`…), confidence |
-| **Locator** (JSON) | HTML: css/xpath + screenshot bbox · PDF: page + bbox · Image: bbox · Video/Audio: start–end timestamp (+ frame bbox) |
-| **Finding** | rule_id, segment_id, matched_text, expected, severity, confidence, status (`open`/`confirmed`/`false_positive`/`fixed`/`waived`), assignee, comments |
+| **Asset** | url, page_url, mime, sha256, fetched_at, storage_key, parent_asset_id, detected_languages |
+| **Segment** | asset_id, text, **text_source** (see §5.2), **language**, **script**, locator, extractor + version, confidence |
+| **Locator** | HTML: CSS selector + screenshot bbox · PDF/Office: page/slide + bbox · Image: bbox · Video: timestamp (+ frame bbox) · Audio: timestamp |
+| **Finding** | rule_id/version, segment_id, matched_text, expected, severity, confidence, `new / persisting / fixed` vs previous run |
 
-The **locator** is the key UX enabler: every finding can be shown *in place* —
-highlighted on the page screenshot, the PDF page, the image, or the exact second of the video.
+There is no workflow state on findings. A **suppression list** (a rule exception or an
+allow-listed URL) is the only way to silence a known false positive, and it is itself config.
 
 ---
 
 ## 5. Component design & tech options
 
-Legend: ✅ recommended default · ◻ alternative · ⚠ license caveat
+Legend: ✅ recommended · ◻ alternative · ⚠ caveat
 
-### 5.1 Crawling & discovery
+### 5.1 Crawling — is there a modern alternative like Chrome MCP?
 
-| Need | Options |
+**Short answer:** Chrome DevTools MCP and Playwright MCP are modern and useful, but they
+are the wrong tool for the **bulk crawler**. They are the right tool for the **AI assistant**.
+
+| Option | What it is | Good for | Not good for |
+|---|---|---|---|
+| **Chrome DevTools MCP** (Google, Apache-2.0) | MCP server that lets an LLM drive Chrome through DevTools: navigate, inspect DOM, network, screenshots, performance | Interactive, AI-driven inspection of a single page | Crawling thousands of pages: each step costs an LLM call, so it is slow, costly and gives different results from run to run |
+| **Playwright MCP** (Microsoft, Apache-2.0) | Same idea, built on Playwright, uses the accessibility tree | Same as above; works across browsers | Same as above |
+| **Crawl4AI** (Apache-2.0, Python) | Modern crawler built for AI use: Playwright underneath, outputs clean Markdown, deep-crawl strategies, media and link extraction, screenshots, PDF | Fast start, text ready for LLMs, active project | Less control over the exact DOM locators and every text source we need; its Markdown output drops attributes and metadata |
+| **Crawlee for Python** (Apache-2.0) | Crawling framework: request queue, retries, sessions, Playwright and HTTP crawlers | Reliable, deterministic crawling with full DOM access | More setup than Crawl4AI |
+| **Firecrawl** | Crawl-to-Markdown API | Quick results | ⚠ AGPL when self-hosted; the hosted version is paid |
+| **browser-use / Stagehand** | Agentic browsing frameworks | Tasks on sites that need a login or form filling | Out of scope (no login-based assets) |
+
+**Recommendation**
+- **Crawler:** ✅ **Crawlee for Python + Playwright (Chromium)**. This is the same browser engine the
+  MCPs use, but it runs deterministically and without LLM cost. It gives the full DOM, computed styles,
+  screenshots and network capture of every same-domain asset. ◻ Crawl4AI is a close alternative if
+  we prefer less code. It is the one to use for a quick proof of concept.
+- **AI assistant:** ✅ Connect **Playwright MCP** (or Chrome DevTools MCP) as a tool for Gemini, for tasks like
+  *"open this page live and check whether the header still says 'Acme Cloud'"* or *"why is this page
+  missing from the crawl?"*. It is used for single pages and on request, never for bulk crawling.
+
+Crawler behaviour:
+- Discovery from the sitemap and links, within `allowed_domains` only. Third-party `<iframe>`s, embeds and assets on other domains are recorded as *"skipped – out of scope"* so coverage stays visible.
+- Pages behind a login, or that return 401/403, are skipped and logged.
+- Pages are rendered with **CJK fonts installed** (Noto CJK) so screenshots and OCR are correct for Chinese and Japanese.
+- For each page: the DOM snapshot, a full-page screenshot, and every linked or embedded same-domain file (images, SVG, PDF, Office files, video, audio, subtitle files).
+
+### 5.2 Extraction — "all kinds of text"
+
+Every place brand text can appear becomes a **Segment** tagged with its `text_source`:
+
+| Asset | Text sources extracted |
 |---|---|
-| Crawl framework | ✅ **Crawlee for Python** (Apache-2.0) — queues, retries, autoscaling, Playwright + HTTP crawlers in one<br/>◻ **Scrapy** + scrapy-playwright (BSD) — very mature, bigger ecosystem |
-| JS rendering | ✅ **Playwright** (Apache-2.0) with headless Chromium |
-| Sitemap discovery | ✅ **ultimate-sitemap-parser** (GPL-3.0 ⚠ — fine for internal use) ◻ custom parser with `lxml` |
-| robots.txt | `protego` (BSD) / built-in in Scrapy/Crawlee |
-| Embedded media | ✅ **yt-dlp** (Unlicense) for YouTube/Vimeo/etc. — prefer fetching captions over downloading video |
+| **Web page** | visible text (including CSS `::before/::after` content), headings, buttons, form labels and placeholders, `alt`, `title`, `aria-*`, `<meta>` description and keywords, OpenGraph and Twitter tags, JSON-LD / structured data, `<title>`, inline **SVG text**, **canvas and CSS-background text** (OCR of the screenshot), hidden or collapsed text (tabs, accordions, flagged as `hidden`), link text, URL slug and file names (reported for information only) |
+| **Image** (jpg/png/webp/gif/svg) | OCR text, SVG `<text>`, EXIF/XMP/IPTC metadata (title, description, copyright) |
+| **PDF** | text layer with positions; OCR for scanned pages or pages with little text; **text in embedded images**; document properties (title, author, subject, keywords); bookmarks, annotations, form-field labels |
+| **Word / PowerPoint / Excel** | body, headers and footers, tables, **speaker notes**, comments, slide titles, sheet names and cell text, embedded images (OCR), document properties |
+| **Video** (same-domain mp4/webm/HLS) | **spoken** transcript (speech-to-text), **on-screen text** (OCR of key frames), subtitle/caption tracks (VTT/SRT), container metadata |
+| **Audio** (mp3/wav/…) | spoken transcript, ID3 metadata |
 
-Crawler also captures: **full-page screenshot** per page (evidence + OCR of text rendered in
-canvas/CSS backgrounds), all `<img>`/`srcset`/CSS background images, `<a href>` to documents,
-`<video>/<audio>/<iframe>` sources, `alt`, `title`, `aria-label`, `<meta>`/OpenGraph, JSON-LD.
+**Extraction tools**
 
-### 5.2 Content extraction
-
-| Asset | Recommended | Alternatives |
+| Need | ✅ Recommended | ◻ Alternatives |
 |---|---|---|
-| HTML text | ✅ Full DOM visible text via Playwright (`innerText` + attributes) **and** `trafilatura` (Apache-2.0) for main-content | `selectolax`, `BeautifulSoup` |
-| PDF (digital) | ✅ **pypdfium2** (Apache/BSD) or **pdfplumber** (MIT) — text + bbox per word | PyMuPDF ⚠ AGPL; `pdfminer.six` (MIT) |
-| PDF (scanned) | Detect "no text layer / low chars per page" → rasterize → OCR | **OCRmyPDF** (MPL-2.0) wraps Tesseract |
-| Word/PPT/Excel | ✅ **Docling** (MIT, IBM) — unified parser for PDF/DOCX/PPTX/XLSX/HTML/images with layout + OCR | `python-docx`, `python-pptx`, `openpyxl` (MIT); **Apache Tika** (Apache-2.0, needs JVM); **Unstructured** (Apache-2.0) |
-| Images in docs | Extract embedded images → treat as child assets → OCR | |
-| Legacy `.doc/.ppt` | **LibreOffice headless** (MPL) convert → modern format | Tika |
+| Web page DOM text and attributes | Playwright DOM walk (our own extractor) + `trafilatura` (main-content flag) | selectolax |
+| PDF, DOCX, PPTX, XLSX | **Docling** (MIT): one consistent output with layout and positions, built-in OCR | pypdfium2 / pdfplumber (fast path); python-docx / python-pptx / openpyxl; Apache Tika |
+| Legacy `.doc/.ppt/.xls` | LibreOffice headless → convert to the modern format | Tika |
+| Media and metadata | `ffmpeg`/`ffprobe`, `exiftool` | `mutagen` (audio tags) |
+| Video key frames | **PySceneDetect** + perceptual-hash dedupe (`imagehash`) | 1 fps sampling |
+| Speech-to-text | **faster-whisper** (MIT); multilingual, auto-detects language | whisper.cpp; **Gemini audio** (see §5.4) |
 
-> **Docling vs. per-format libraries**: Docling gives one consistent output (with page/bbox) for
-> almost every document type and has OCR built in, which massively simplifies the extractor
-> layer. Per-format libraries are lighter and faster. Proposal: Docling as the default,
-> lightweight libraries as a fast path for plain digital PDFs.
+### 5.3 Multilingual handling
 
-### 5.3 OCR (images, scanned PDFs, video frames)
+| Concern | Approach |
+|---|---|
+| Language detection | ✅ **lingua-py** (Apache-2.0), per segment (a page often mixes languages); the URL locale hint gives a starting guess |
+| OCR for CJK and Latin text | ✅ **RapidOCR / PaddleOCR PP-OCR multilingual models** (Apache-2.0): strong on Chinese and Japanese, CPU-friendly. ◻ **Tesseract** language packs (`chi_sim`, `chi_tra`, `jpn`, `jpn_vert`, `deu`, `spa`, `eng`, …) for clean scanned documents |
+| Vertical Japanese and Chinese text | PaddleOCR handles it; Tesseract `jpn_vert` / `chi_*_vert` as fallback |
+| Speech-to-text | Whisper is multilingual. Brand terms go into `initial_prompt`/hotwords per language to reduce misrecognition |
+| Normalization | Unicode **NFKC** (full-width `ＡｃｍｅＣｌｏｕｄ` → `AcmeCloud`), case-folding for Latin scripts only, zero-width and soft-hyphen removal, handling of the Japanese middle dot `・` and long-vowel mark `ー`, accent-aware matching for Spanish and German (`casefold` + exact accent check) |
+| Word boundaries | Latin scripts: tokens + fuzzy match with **RapidFuzz**. CJK has no spaces, so match on characters/n-grams directly; optional **jieba** (Chinese) and **SudachiPy** (Japanese) tokenizers for context. German compounds: `allow_compounds` accepts `AcmeCloud-Lösung` and flags `Acmecloudlösung` |
+| Mixed scripts / variants | Detect Simplified vs Traditional mismatches (`爱克雲`) with **OpenCC** (Apache-2.0) conversion tables |
+| LLM tier | Gemini is multilingual and gets the segment language plus the approved localized forms in the prompt |
 
-| Option | License | Notes |
+### 5.4 AI layer — Google Gemini
+
+**Provider abstraction:** `LLMProvider` → `GeminiProvider` (default) · `OllamaProvider` (optional, local).
+We use the official **`google-genai` Python SDK**, which supports both **Gemini API (AI Studio key)** and
+**Vertex AI** (GCP project + service account).
+
+**Where Gemini is used**
+
+| Use | Model tier (configurable) | When |
 |---|---|---|
-| ✅ **RapidOCR** (PaddleOCR models on ONNX Runtime) | Apache-2.0 | Good accuracy on marketing images/stylized text, CPU-friendly, no Paddle dependency |
-| ◻ **Tesseract 5** (+ `pytesseract`) | Apache-2.0 | Fast, great on clean document text, weaker on banners/stylized text |
-| ◻ **PaddleOCR** | Apache-2.0 | Best accuracy, heavier install |
-| ◻ **EasyOCR** | Apache-2.0 | Simple, PyTorch, slower on CPU |
-| Later: **VLM** (Qwen2.5-VL / Florence-2 via Ollama or HF) | Apache/MIT | Reads logos/stylized wordmarks, describes images; much slower |
+| **Rule judge**: ambiguous findings, LLM rule types | Flash-class (fast, cheap) | Only for `ambiguous` segments or `llm_review: always`; results cached by `(rule_version, segment_hash)` |
+| **AI assistant**: chat with tool calling | Pro-class or Flash | On demand from the UI |
+| **Multimodal extraction fallback** *(optional)*: read text in an image, frame, audio clip or PDF page when local OCR/speech-to-text confidence is low, or for stylized logos and wordmarks | Flash-class | Per-asset-type setting: `local` \| `local + gemini fallback` \| `gemini` |
+| **Embeddings** for assistant search | Gemini embedding model (multilingual) | Indexing findings and segments |
 
-Proposal: Tesseract for scanned documents (fast), RapidOCR for web images and video frames.
-Store per-word confidence; low-confidence matches get flagged as "needs human review"
-rather than hard failures.
+Gemini's native multimodal input (images, PDFs, video, audio) matters here: stylized logos
+and banner text that local OCR misreads can be sent to Gemini. The assets are public, so there
+is no data-sensitivity problem, and the "fallback only" default keeps cost low.
 
-### 5.4 Video & audio
+**AI assistant tools** (Gemini function calling, each backed by our API):
+`search_findings`, `get_compliance_stats`, `get_asset_evidence`, `explain_finding`,
+`draft_rule` (returns YAML; shown in the sandbox for the user to confirm), `compare_runs`,
+`summarize_run`, and optionally `browse_live_page` (Playwright/Chrome DevTools MCP).
+The assistant never changes config without the user confirming in the UI.
 
-```
-video ─▶ ffmpeg ─┬─▶ audio.wav ─▶ faster-whisper ─▶ transcript segments (timestamped)
-                 └─▶ PySceneDetect keyframes ─▶ OCR ─▶ on-screen text segments (timestamped + bbox)
-YouTube/Vimeo ─▶ yt-dlp: captions if available (skip ASR) else audio-only download
-```
+**Gemini settings page (UI)**
 
-| Need | Recommended | Notes |
-|---|---|---|
-| Demux / transcode / frames | **FFmpeg** | ⚠ LGPL/GPL depending on build; used as a CLI tool, not linked |
-| Speech-to-text | ✅ **faster-whisper** (MIT) — CPU int8 works; GPU optional | ◻ whisper.cpp (MIT) · ◻ Vosk (Apache-2.0, lighter, lower accuracy) |
-| Keyframes | ✅ **PySceneDetect** (BSD) | ◻ fixed-interval sampling (e.g., 1 fps) + perceptual-hash dedupe (`imagehash`) |
+| Setting | Notes |
+|---|---|
+| Connection mode | `Gemini API (API key)` or `Vertex AI (project, location, service-account JSON)` |
+| API key / credentials | Stored **encrypted on the server** (Fernet/KMS); the UI only shows `••••1234`; never sent back to the browser |
+| Model per task | Dropdowns for **Assistant**, **Rule judge**, **Multimodal extraction** and **Embeddings**, filled live from the API's list of models (so new Gemini versions show up without code changes) |
+| Generation params | temperature, top-p, max output tokens, thinking budget (if the model supports it), JSON-mode on/off for the rule judge |
+| Safety settings | Per-category thresholds (marketing content can falsely trip filters, so the default is relaxed) |
+| Limits & budget | Requests/min, tokens/day, monthly spend cap, "pause LLM steps when cap reached" |
+| Multimodal fallback | Per asset type: off / fallback below confidence X / always |
+| Test connection | Sends a sample prompt and shows latency, model and token usage |
+| Usage panel | Tokens and estimated cost per run, task and model |
 
-Brand names are often mis-transcribed by ASR ("Acme Cloud" vs "AcmeCloud"), so:
-use Whisper's `initial_prompt`/hotwords with the brand vocabulary, and treat **spoken**
-findings differently (spoken rules = pronunciation/mention, not spelling).
+⚠ The Gemini API **free tier** has strict rate limits, and Google may use free-tier prompts to improve its products.
+That is acceptable for public content, but the paid tier or Vertex AI is recommended for predictable
+throughput. Local **Ollama** stays available as a zero-cost fallback provider.
 
 ### 5.5 Rule engine
 
-Two-tier evaluation:
+1. **Deterministic tier** (every segment): normalize per script → exact, regex and disallowed-variant match →
+   fuzzy (Latin) / character n-gram (CJK) → exceptions → trademark-first-use check.
+   Output: `violation` / `ok` / `ambiguous` + confidence.
+   **Spoken** segments (speech-to-text) are checked for mention and pronunciation only, not spelling.
+   Segments whose OCR/speech-to-text confidence is low are marked `ambiguous`.
+2. **Gemini tier** (only `ambiguous` or LLM rules): returns structured JSON with
+   `{verdict, reason, suggested_fix}` in the segment's language plus English.
+3. **Rule sandbox (UI):** paste text, upload a file or enter a URL, then see the live results before activating a rule version.
 
-1. **Deterministic tier (fast, cheap, explainable)** — runs on every segment
-   - Normalization: Unicode NFKC, whitespace/hyphen/zero-width char folding, ®/™ handling
-   - Exact & regex matching (`regex` module), disallowed-variant list
-   - Fuzzy detection with **RapidFuzz** (MIT) over token n-grams to catch misspellings
-   - Context exclusions (URLs, emails, handles, code blocks)
-   - Output: `violation` / `ok` / `ambiguous` with confidence
-2. **LLM tier (optional, only for `ambiguous` or LLM-type rules)**
-   - Prompt includes rule text, segment + surrounding context, asset type
-   - Structured JSON output (verdict, reason, suggested fix)
-   - Results cached by `(rule_version, segment_hash)`
+### 5.6 Orchestration
 
-Rule definitions validated with **Pydantic**; each rule is versioned; a **rule sandbox** in the UI
-lets users paste text / upload a file / pick a URL and test a rule before activating it.
+Scale is not a concern, so the stack is kept small:
+- ✅ **Celery + Valkey** (BSD) with separate queues (crawl / extract / media / rules) so slow media jobs don't block pages
+- ◻ Even simpler: **Huey** or **Dramatiq** with a SQLite/Redis broker, or a **Postgres-backed queue** (e.g. `procrastinate`, MIT). This removes the Valkey container entirely; the Postgres queue is my preferred simplification
+- Scheduling: cron expressions per site, run by the same worker (Celery Beat / procrastinate periodic tasks)
+- Run progress is sent to the UI over **SSE**
 
-### 5.6 AI layer
+### 5.7 Storage
 
-| Need | Recommended | Alternatives |
-|---|---|---|
-| LLM runtime (local, free) | ✅ **Ollama** (MIT) | ◻ vLLM (Apache-2.0, GPU) · ◻ llama.cpp server |
-| Models | ✅ **Qwen2.5 / Qwen3 7–14B** (Apache-2.0) · Mistral 7B/Small (Apache-2.0) | ⚠ Llama 3.x (custom community license) · hosted Claude/OpenAI as opt-in plugin |
-| Vision (later) | Qwen2.5-VL (Apache-2.0), Florence-2 (MIT) | |
-| Embeddings | ✅ `bge-small`/`bge-m3` or `nomic-embed-text` via Ollama/sentence-transformers | |
-| Vector store | ✅ **pgvector** (PostgreSQL license) — no extra service | ◻ Qdrant (Apache-2.0), Chroma (Apache-2.0) |
-| Orchestration | Thin in-house layer with LLM **tool calling** | ◻ LlamaIndex / LangChain (MIT) — heavier |
+- ✅ **PostgreSQL 16** + **pgvector**: config, runs, assets, segments, findings, full-text search, vectors
+- ✅ **Local filesystem volume** for raw files, screenshots and key frames. Object storage is no longer needed at this scale
 
-LLM access goes through a single provider interface so hosted models can be swapped in by config.
+### 5.8 Backend
 
-**AI Assistant capabilities** (tool-calling agent over the backend API):
-- *Query*: "Which PDFs on acme-main misspell AcmeCloud since last month?" → SQL/API tool
-- *Explain*: why a finding was raised, with evidence
-- *Author rules*: "Flag 'Acme Cloud' with a space but ignore URLs" → proposes YAML, runs it in sandbox
-- *Triage help*: suggest false positives, bulk-classify similar findings
-- *Summarize*: executive summary of a run / site / trend
-- *Suggest fixes*: rewritten copy that follows guidelines
+**FastAPI** + Pydantic v2 + SQLAlchemy 2 + Alembic · SSE for progress and assistant streaming ·
+simple local auth (`fastapi-users`) with `admin` / `viewer` roles (no reviewer workflow).
 
-### 5.7 Orchestration & scheduling
+### 5.9 Frontend — is Vue the same as HTML + JS?
 
-| Option | License | Fit |
-|---|---|---|
-| ✅ **Celery** + **Valkey/Redis** broker | BSD | Mature, simple, per-stage queues (crawl / extract / media / rules) scale independently; UI builds on our own Run/Task tables |
-| ◻ **Dramatiq** / **RQ** | LGPL / BSD | Simpler than Celery, fewer features |
-| ◻ **Prefect 3** | Apache-2.0 | Built-in flow UI, retries, scheduling; adds a server; its UI would duplicate ours |
-| ◻ **Temporal** | MIT | Most robust durable workflows; heaviest to operate |
-| Scheduler | ✅ Celery Beat or **APScheduler** (MIT) reading cron from Site config | |
+**Yes, in the sense that matters:** Vue is a **JavaScript library**. You still write **HTML**
+(Vue templates are HTML with a few extra attributes like `v-if`, `v-for` and `@click`), **CSS**
+and **plain JavaScript**. The browser only ever runs normal HTML/CSS/JS. There is no new language, no
+TypeScript requirement and no server-side runtime.
 
-⚠ Redis ≥ 7.4 is no longer BSD (RSAL/SSPL, AGPL option in 8.x) → prefer **Valkey** (BSD) as a drop-in.
+What Vue adds on top of plain JS:
+- **Reactivity:** change a JS variable and the page updates. No manual `document.querySelector(...).innerHTML = ...`
+- **Components:** reusable pieces such as `<FindingCard>` or `<PdfEvidence>`, each with its own HTML, JS and CSS in one file
+- **Routing and state** for a multi-screen app
 
-### 5.8 Storage & search
+| Option | What you write | Build step | Fit for this UI |
+|---|---|---|---|
+| **Plain HTML + JS** (vanilla, maybe Web Components) | HTML files + JS + `fetch()` + DOM updates by hand | None | Workable, but dashboards, filter panels, evidence viewers and chat mean a lot of hand-written DOM code |
+| **Vue 3, no build** | HTML page + `<script src="vue.js">`, templates inside the HTML | None | Good for prototypes; harder to organize as the app grows |
+| ✅ **Vue 3 + Vite (plain JS)** | `.vue` files (HTML template + JS + CSS); Vite bundles them into **static HTML/JS/CSS** | `npm run build` | Best balance: still HTML + JS, but organized and reactive |
+| ◻ htmx + Alpine.js | HTML returned by Python (Jinja) + small JS sprinkles | None | Simple, but weaker for interactive viewers and streaming chat |
 
-| Need | Recommended | Alternatives |
-|---|---|---|
-| Relational + JSON + FTS + vectors | ✅ **PostgreSQL 16** (+ pgvector) | |
-| Raw assets, screenshots, frames | ✅ Local filesystem / volume for MVP → **SeaweedFS** or **Garage** (S3-compatible) for scale | ⚠ MinIO (AGPL, community edition reduced) |
-| Full-text search in UI | ✅ Postgres FTS | ◻ Meilisearch (MIT) / OpenSearch (Apache-2.0) if volume grows |
+**Recommendation:** Vue 3 + Vite in plain JavaScript, with **PrimeVue** (MIT) components.
+Supporting libraries: **Apache ECharts** (dashboards), **PDF.js** (PDF evidence), **Video.js**
+(jump to timestamp), **CodeMirror 6** (YAML editor), **markdown-it** (assistant replies),
+**vue-i18n** (UI localization if needed).
 
-### 5.9 Backend API
+### 5.10 Deployment
 
-- **FastAPI** (MIT) + **Pydantic v2** + **SQLAlchemy 2 / SQLModel** + **Alembic** migrations
-- **SSE / WebSocket** for live run progress & assistant streaming
-- Auth: ✅ `fastapi-users` (MIT) with local users + roles for MVP; ◻ **Keycloak** (Apache-2.0) for SSO/OIDC
-- Roles: `admin` (config), `reviewer` (triage), `viewer` (read/report)
-
-### 5.10 Frontend (JS + HTML)
-
-| Option | Pros | Cons |
-|---|---|---|
-| ✅ **Vue 3 (plain JS) + Vite** + component lib (**PrimeVue**, MIT) | Rich SPA, easiest learning curve, no TypeScript needed, large component library (data tables, tree, tabs, splitter) | Build step |
-| ◻ **htmx + Alpine.js** + server-rendered Jinja | Almost no JS build, very simple | Harder for complex interactive viewers (PDF/video evidence, chat) |
-| ◻ **React (JS) + Vite** + Mantine/MUI | Largest ecosystem | More boilerplate |
-| ◻ Vanilla JS + Web Components (Lit) | No framework lock-in | Most custom work |
-
-Supporting libraries (all permissive): **PDF.js** (evidence highlight on PDF pages),
-**Video.js** (seek-to-timestamp), **CodeMirror 6** (YAML rule editor with schema validation),
-**Apache ECharts** (dashboards), **Tabulator** or PrimeVue DataTable (findings grid),
-**markdown-it** (assistant responses).
-
-### 5.11 Deployment
-
-- **Docker Compose** for MVP: `api`, `worker-crawl`, `worker-extract`, `worker-media`, `worker-rules`,
-  `beat`, `postgres`, `valkey`, `ollama`, `ui` (static via Caddy/Nginx)
-- Kubernetes / Helm later; media & LLM workers optionally on a GPU node
-- Observability: structured logs (JSON), **Prometheus** + **Grafana**, **OpenTelemetry** traces; Flower for Celery (optional)
+**Docker Compose** with `api`, `worker` (one image, several queues), `postgres`, optional `valkey`,
+optional `ollama`, and `ui` (static files served by Caddy/Nginx). The worker image includes Chromium,
+Noto CJK fonts, Tesseract language packs, ffmpeg, exiftool and LibreOffice. The GPU is optional.
 
 ---
 
@@ -319,118 +341,120 @@ Supporting libraries (all permissive): **PDF.js** (evidence highlight on PDF pag
 ### 6.1 Navigation
 
 ```
-┌───────────────────────────────────────────────────────────────────────────────┐
-│  ◆ BrandGuard      Dashboard  Sites  Rules  Runs  Findings  Reports  ⚙   [🤖]│
-└───────────────────────────────────────────────────────────────────────────────┘
-                                                            AI assistant drawer ─┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ ◆ BrandGuard  [Brand: Acme ▾]  Overview  Compliance  Explorer  Runs          │
+│                               Sites  Rules  Settings                    [🤖] │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
+The **brand switcher** filters everything; with a single brand it is hidden.
 
 ### 6.2 Screens
 
-| Screen | Purpose | Key interactions |
-|---|---|---|
-| **Dashboard** | Health at a glance | Compliance score per site, trend chart, open findings by severity/asset type, last/next runs, top recurring violations |
-| **Sites** | Manage crawl targets | Add site wizard (URL → auto-detect sitemap → preview discovered pages & asset counts → scope rules → schedule), bulk import YAML/CSV, enable/disable |
-| **Rules** | Author brand rules | Form-based builder for common rules (brand name: canonical, variants, fuzzy slider) **+** YAML editor toggle; **Test sandbox** (paste text / upload file / URL → live findings); versions & diff; assign rule sets to sites |
-| **Runs** | Orchestration | Start run (full / incremental / single URL), live pipeline view per stage (discovered → fetched → extracted → evaluated) with counts, throughput, errors; per-task logs; retry failed; cancel; schedule calendar |
-| **Findings** | Triage | Grid with facets (site, rule, severity, asset type, status, confidence, new-since-last-run); bulk actions (confirm / false positive / waive / assign); group-by "same text across N assets" |
-| **Evidence viewer** | See it in context | Split view: left = rendered evidence (page screenshot w/ highlight box, PDF.js page w/ bbox, image w/ bbox, video player jumping to timestamp + transcript), right = matched text, rule, expected value, suggested fix, history, comments, link to live URL |
-| **Asset explorer** | Browse everything extracted | Tree by site → page → assets; view extracted text/OCR/transcript; re-extract; exclude from future runs |
-| **Reports** | Share results | Per-site / per-run report; export CSV/XLSX/PDF; diff between two runs (new / fixed / persisting) |
-| **Assistant** | AI help, everywhere | Docked chat drawer, context-aware (knows current site/finding/rule on screen); answers with links to findings; "Create rule from this" and "Mark similar as FP" actions require user confirmation |
-| **Settings** | Platform | Users/roles, LLM provider & model, OCR/ASR engine choice, politeness defaults, notifications (email / Slack / Teams webhooks), retention |
+| Screen | Purpose |
+|---|---|
+| **Overview** | KPI tiles: compliance score, assets evaluated, violations by severity, new vs fixed since last run, coverage (crawled / skipped / failed). Latest runs and next scheduled run |
+| **Compliance dashboard** | Score trend across runs; breakdowns by **site**, **language**, **asset type**, **text source** (visible / metadata / image OCR / video spoken / on-screen, …) and **rule**; heat-map site × language; top offending pages and files; most frequent wrong variants (e.g. "Acme Cloud" ×312). Every chart drills down to a findings list |
+| **Findings list** (drill-down) | Read-only grid with facets (site, language, asset type, text source, rule, severity, confidence, new/persisting/fixed); export CSV/XLSX; **click → Evidence viewer** |
+| **Evidence viewer** | Left: the evidence in context (page screenshot with highlight box, PDF.js page with bbox, image with bbox, video at timestamp with transcript/on-screen text, audio with transcript). Right: matched text, expected form, rule, language, confidence, extractor, Gemini explanation (if any), link to the live URL |
+| **Explorer** | Browse site → page → assets; view every extracted segment by text source and language; see skipped out-of-scope items and why |
+| **Runs** | Start run (full / incremental / single URL / re-evaluate only); live pipeline progress per step; errors and logs; schedules |
+| **Sites** | Add-site wizard: URL → sitemap detection → preview of discovered pages, languages and asset mix → scope → brand → schedule |
+| **Rules** | Brand terms editor (canonical form, localized approved and disallowed forms per language); rule builder with form + YAML toggle; **sandbox**; versions and diff |
+| **Settings** | **Gemini** (§5.4), OCR/speech-to-text engines and languages, crawl politeness, suppression list, users, data retention |
+| **Assistant drawer** | Gemini chat that knows the current screen; answers link to findings and charts; can draft rules into the sandbox |
 
-### 6.3 Key UX principles
-- **Evidence first**: never show a finding without its in-context locator.
-- **Confidence visible**: OCR/ASR/LLM-derived findings carry a confidence badge; low-confidence go to a "needs review" lane.
-- **Human in the loop**: AI never changes config or statuses without explicit confirmation.
-- **Incremental by default**: highlight *new* vs *persisting* vs *fixed* issues since last run.
+### 6.3 Compliance scoring (proposal)
 
----
-
-## 7. Brand-name rule — worked example
-
-Canonical `AcmeCloud`, disallowed `Acme Cloud`, fuzzy on.
-
-| Source | Segment | Result |
-|---|---|---|
-| HTML `<h1>` | "Welcome to Acme Cloud" | ❌ disallowed variant (high) |
-| PDF p.3 | "AcmeCloud® platform" | ✅ |
-| Image OCR (conf 0.71) | "AcmeCluod" | ⚠ fuzzy match, low OCR confidence → needs review |
-| Video 00:42 transcript | "acme cloud" | ℹ spoken mention — spelling rule not applied; logged as mention |
-| Video 01:10 on-screen text | "ACMECLOUD" | ❌ casing (high) |
-| URL `acmecloud.com/login` | — | skipped by exception |
-| First body mention | "AcmeCloud" without ® | ⚠ trademark-on-first-use (medium) |
+- **Asset score** = 100 − weighted penalties (high = 10, medium = 3, low = 1), floor 0
+- **Site / brand score** = share of evaluated assets with **no high-severity violation**, plus the weighted average asset score
+- Every score can be sliced by language, asset type and text source, and compared between runs
 
 ---
 
-## 8. Non-functional considerations
+## 7. Brand-name rule — multilingual example
 
-- **Politeness & legality**: respect robots.txt, rate limits per domain, identifiable User-Agent;
-  crawl only sites the organization owns/is authorized to audit.
-- **Incrementality**: HTTP `ETag`/`Last-Modified` + sha256 dedupe → only changed assets are re-extracted/re-evaluated. Rule change → re-evaluate stored segments without re-crawling.
-- **Scale target (to confirm)**: e.g. 50 sites × 5k pages × 20 assets ≈ 5M assets → horizontal workers, per-queue concurrency, object storage.
-- **Determinism & audit**: every finding references run id, config version, rule version, extractor + version.
-- **Security**: sandboxed headless browser, file-size limits, MIME sniffing, zip-bomb/decompression limits, no macro execution for Office files (parse only).
-- **Retention**: configurable retention for raw media (videos are large); keep extracted text + thumbnails longer.
+| Source | Language | Segment | Result |
+|---|---|---|---|
+| HTML `<h1>` | en | "Welcome to Acme Cloud" | ❌ disallowed variant |
+| HTML `alt` | en | "AcmeCloud dashboard" | ✅ |
+| `og:title` | ja | "アクメ・クラウドの特長" | ❌ disallowed katakana form (expected アクメクラウド) |
+| Image OCR (0.93) | zh-Hans | "爱克雲 平台" | ❌ mixed Simplified/Traditional (expected 爱克云) |
+| Full-width text | ja | "ＡｃｍｅＣｌｏｕｄ" | ✅ after NFKC (optionally a low-severity note on full-width use) |
+| PDF p.4 | de | "Acmecloud-Lösung" | ❌ casing |
+| PDF p.4 | de | "AcmeCloud-Lösung" | ✅ allowed compound |
+| DOCX properties → Title | es | "Guía de Acme Cloud" | ❌ disallowed variant (in metadata) |
+| Video 00:42 spoken | es | "acme cloud" | ℹ spoken mention; spelling not checked |
+| Video 01:10 on-screen | en | "ACMECLOUD" | ❌ casing |
+| Banner image, stylized (OCR 0.52) | en | "AcmeCIoud" | ⚠ ambiguous → Gemini vision fallback: "AcmeCloud" ✅ |
+| `youtube.com` iframe | — | — | ⏭ skipped (third-party, out of scope) |
 
 ---
 
-## 9. License watch-list (things to avoid or isolate)
+## 8. Non-functional
+
+- **Politeness:** respect robots.txt, per-domain rate limits, identifiable User-Agent; crawl only brand-owned domains.
+- **Incremental:** ETag/Last-Modified + sha256; rule changes re-evaluate without re-crawling.
+- **Audit:** every finding references run, config version, rule version, extractor and model version.
+- **Safety:** sandboxed Chromium; file-size and decompression limits; Office macros are never executed.
+- **Cost control:** Gemini only for ambiguous cases and fallbacks, caching, budget cap in Settings.
+
+## 9. License watch-list
 
 | Component | Issue | Mitigation |
 |---|---|---|
-| PyMuPDF | AGPL-3.0 | Use pypdfium2 / pdfplumber / Docling |
-| MinIO | AGPL-3.0 | SeaweedFS (Apache-2.0) / Garage (AGPL too ⚠) / filesystem |
-| Redis ≥ 7.4 | RSAL/SSPL/AGPL | Valkey (BSD) |
-| Ultralytics YOLO | AGPL-3.0 | Avoid for logo detection; use CLIP/OpenCLIP (MIT) or ONNX models with permissive weights |
-| FFmpeg | LGPL/GPL (build-dependent) | Invoke as external CLI; use LGPL build if distributing |
-| Llama models | Custom license | Default to Apache-2.0 models (Qwen, Mistral) |
-| ultimate-sitemap-parser | GPL-3.0 | Fine internally; replace if distributing |
+| PyMuPDF | AGPL | Docling / pypdfium2 / pdfplumber |
+| Redis ≥ 7.4 | not BSD | Valkey, or a Postgres queue |
+| Firecrawl (self-hosted) | AGPL | Crawlee / Crawl4AI |
+| Ultralytics YOLO | AGPL | Gemini vision / OpenCLIP for future logo rules |
+| FFmpeg | LGPL/GPL by build | Run as an external CLI |
+| Gemini API | Commercial service (free tier has limits and data-use terms) | Settings budget cap; Ollama fallback |
 
----
+## 10. Tech stack summary
 
-## 10. Proposed repository layout (for later)
+| Layer | Choice |
+|---|---|
+| Frontend | Vue 3 + Vite (plain JS), PrimeVue, ECharts, PDF.js, Video.js, CodeMirror |
+| API | FastAPI, Pydantic, SQLAlchemy, SSE |
+| Jobs | Celery + Valkey (or a Postgres queue via procrastinate) |
+| Crawl | Crawlee for Python + Playwright (Chromium, Noto CJK fonts) |
+| Extract | Playwright DOM walker, trafilatura, Docling, LibreOffice, exiftool, ffmpeg, PySceneDetect |
+| OCR | RapidOCR/PaddleOCR (multilingual), Tesseract (+ language packs) |
+| Speech-to-text | faster-whisper |
+| Language | lingua-py, OpenCC, jieba, SudachiPy, RapidFuzz |
+| AI | Gemini via `google-genai` (API key or Vertex AI); optional Ollama; Playwright MCP as an assistant tool |
+| Data | PostgreSQL + pgvector, local file volume |
+| Deploy | Docker Compose |
+
+## 11. Proposed repository layout (later)
 
 ```
-backend/
-  app/api/            FastAPI routers
-  app/core/           config, db, auth
-  app/models/         SQLAlchemy models
-  app/pipeline/
-    crawl/            Crawlee/Playwright spiders
-    extract/          html, pdf, office, image_ocr, media
-    rules/            engine + rule plugins (brand_name, ...)
-    ai/               llm provider, assistant tools
-  app/workers/        Celery tasks & queues
-frontend/             Vue 3 + Vite (JS)
-config/examples/      sites.yaml, rules.yaml
-deploy/               docker-compose, helm
+backend/app/{api,core,models}
+backend/app/pipeline/{crawl,extract,lang,rules,score}
+backend/app/ai/{providers/gemini.py, providers/ollama.py, assistant, tools}
+backend/app/workers
+frontend/            Vue 3 + Vite
+config/examples/     brands.yaml, sites.yaml, rules.yaml
+deploy/              docker-compose.yml
 docs/
 ```
 
----
+## 12. Roadmap
 
-## 11. Phased roadmap
-
-| Phase | Scope | Outcome |
-|---|---|---|
-| **0 – Spike** (1–2 wks) | Crawl 1 site, extract HTML + digital PDF, brand-name rule, CLI output | Validate extraction quality & rule accuracy |
-| **1 – MVP** | Sites/Rules config (YAML + UI forms), Runs with live progress, HTML + PDF (incl. scanned) + images OCR + Office via Docling, Findings grid + evidence viewer, CSV export, Docker Compose | Usable by brand team |
-| **2 – Media & AI** | Video/audio (ffmpeg + Whisper + keyframe OCR), YouTube embeds, LLM tier for ambiguous findings, AI assistant (query/explain/author rules), scheduling & notifications, run diffs | Full asset coverage |
-| **3 – Visual brand** | Logo detection (CLIP similarity / VLM), color palette & typography rules, tone-of-voice rules, SSO, multi-tenant, scale-out on K8s | Beyond text rules |
+| Phase | Scope |
+|---|---|
+| **0 – Spike** | One site, English + Japanese pages, HTML + PDF, brand-name rule, CLI output. Also compare Crawlee and Crawl4AI side by side |
+| **1 – MVP** | Brand/Site/Rule config UI, runs with progress, all web-page text sources, PDF/Office via Docling, image OCR (multilingual), compliance dashboard + evidence viewer, CSV/XLSX export, Gemini settings + rule judge |
+| **2 – Media & Assistant** | Same-domain video/audio (speech-to-text + on-screen OCR + subtitles), Gemini multimodal fallback, AI assistant with tools + Playwright MCP, schedules, run diffs |
+| **3 – Visual brand** | Logo, color and typography rules (Gemini vision / OpenCLIP), tone-of-voice rules |
 
 ---
 
-## 12. Open questions for iteration
+## 13. Open questions
 
-1. **Scale**: roughly how many sites, pages per site, and how often should they be reviewed?
-2. **Brands**: one brand or multiple brands/sub-brands (each with its own rule set)? Multiple languages/locales?
-3. **Hosting**: on-prem / VM with Docker, or a cloud (AWS/Azure/GCP)? Is a **GPU** available (affects Whisper/VLM speed)?
-4. **LLM policy**: local-only (Ollama) mandatory, or are hosted LLMs (e.g. Claude) allowed as an option?
-5. **Frontend preference**: Vue 3 (recommended), React, or minimal htmx/Alpine?
-6. **Users & workflow**: who triages findings — do you need assignment, approvals, comments, SLA/ticket integration (Jira, ServiceNow)?
-7. **Third-party embeds**: should YouTube/Vimeo/social embeds and third-party-hosted PDFs be in scope?
-8. **Authenticated areas**: strictly public pages only, or also gated content (login, forms, geo/cookie walls)?
-9. **Outputs**: which reports/notifications are needed (email digest, Slack/Teams, PDF report for leadership)?
-10. **Visual rules timeline**: is logo/color/typography compliance needed early, or is text-first acceptable?
+1. **Gemini access:** Gemini API key (AI Studio) or **Vertex AI** on GCP? Paid tier or free tier?
+2. **"All kinds of text":** I read this as *every source of text* (visible, hidden, metadata, image, document, video and spoken) **plus** non-text brand assets such as logos later. Is that right, or should visual rules (logo, color) come earlier?
+3. **Localized brand names:** do the Chinese and Japanese markets use a **local-script brand name**, or always the Latin form? Is there an official list per market?
+4. **Hidden text** (collapsed tabs, `display:none`, metadata): should violations there count toward the compliance score, or only be reported?
+5. **Crawler preference:** go with Crawlee (control) or Crawl4AI (speed to prototype)? Or run both in the spike and decide?
+6. **Queue:** is it acceptable to drop Redis/Valkey and use a Postgres-backed queue, giving one less service?
+7. **Hosting:** where will this run (laptop/VM with Docker, or GCP since Gemini/Vertex is already there)?
