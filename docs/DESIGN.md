@@ -1,4 +1,4 @@
-# Brand Compliance Review Platform — Solution Design (Draft v0.4)
+# Brand Compliance Review Platform — Solution Design (Draft v0.5)
 
 > Status: **design iteration**, no code yet. Open questions are in [§13](#13-open-questions).
 > Working name: **BrandGuard**.
@@ -19,6 +19,11 @@
 | D10 | No triage workflow; read-only results with **evaluation and compliance dashboards** | v0.2 |
 | D11 | Runs on **one laptop as a plain Python app, no Docker** | v0.4 |
 | D12 | Because of D11: **SQLite** instead of PostgreSQL, **Huey (SQLite)** instead of a Postgres queue, frontend served by the Python server **with no Node build** | v0.4 |
+| D13 | **All caps "PFIZER" is allowed**. Only "Pfizer" and "PFIZER" are correct casings | v0.5 |
+| D14 | **No sub-brand rules for now**. Only the word "Pfizer" itself is checked; compounds pass if that part is spelled correctly | v0.5 |
+| D15 | Scope is **`www.pfizer.com` only**, with no other subdomains | v0.5 |
+| D16 | Target laptop OS is **Windows** | v0.5 |
+| D17 | This is an **independent test**, not done for the site owner. Crawling is conservative and preceded by a pre-flight check of robots.txt and the terms of use (§8.1) | v0.5 |
 
 > **Note on D12:** in v0.3 you agreed to drop Redis in favour of a Postgres queue.
 > Without Docker, PostgreSQL would be a separate install and service on the laptop, so the same goal
@@ -100,19 +105,16 @@ brands:
     terms:
       - id: pfizer
         canonical: "Pfizer"
-        case_sensitive: true             # "pfizer" and "PFIZER" in running text are violations (see Q1 on all caps)
-        allowed_forms:
-          - "Pfizer's"                   # possessive
-          - "Pfizer Inc."
-          - "Pfizer-BioNTech"            # approved co-brand
-        allowed_compounds: ["PfizerPro", "PfizerForAll"]   # sub-brands written as one word (to be confirmed, Q2)
+        allowed_casings: ["Pfizer", "PFIZER"]   # D13: title case and all caps are both correct
+                                                 # "pfizer", "PFizer", "pFizer", "PfIzEr" ... are violations
+        attached_forms: ok               # "Pfizer's", "Pfizer-BioNTech", "PfizerPro": pass if the "Pfizer" part is correct (D14)
         disallowed: ["Phizer", "Pfiser", "Pfzer", "Pifzer", "Pfizzer", "Fizer", "P-fizer"]
         fuzzy: { max_edit_distance: 1, min_similarity: 0.83 }   # short word → tight threshold to avoid false hits
         exceptions: [urls, emails, social_handles, hashtags, file_names, stock_ticker]  # pfizer.com, @pfizer, #pfizer, PFE
         locales:                         # official non-Latin forms, used once country sites are in scope
-          ja:      { approved: ["Pfizer", "ファイザー"],  disallowed: ["ファイザ", "ファイザ―"] }   # dash look-alike vs long-vowel mark
-          zh-Hans: { approved: ["Pfizer", "辉瑞"],       disallowed: ["輝瑞"] }                   # Traditional form on a Simplified page
-          zh-Hant: { approved: ["Pfizer", "輝瑞"],       disallowed: ["辉瑞"] }
+          ja:      { approved: ["Pfizer", "PFIZER", "ファイザー"], disallowed: ["ファイザ", "ファイザ―"] }  # dash look-alike vs long-vowel mark
+          zh-Hans: { approved: ["Pfizer", "PFIZER", "辉瑞"],      disallowed: ["輝瑞"] }                 # Traditional form on a Simplified page
+          zh-Hant: { approved: ["Pfizer", "PFIZER", "輝瑞"],      disallowed: ["辉瑞"] }
     rule_sets: [brand-core]
 ```
 
@@ -124,12 +126,20 @@ sites:
     brand: pfizer
     start_urls: [https://www.pfizer.com/]
     use_sitemap: true
-    allowed_domains: [www.pfizer.com, pfizer.com]   # add CDN/asset domains the site uses (Q3)
+    allowed_domains: [www.pfizer.com]               # D15: no other subdomains (pfizer.com redirects to www)
+    subdomain_assets: skip_and_log                  # files embedded on www pages but hosted on other *.pfizer.com
+                                                    # hosts are listed as "skipped – subdomain" (switchable later)
     exclude: ["\\?.*sort=", "/search\\?"]
-    max_pages: 500                  # Phase 0 cap; remove later
+    max_pages: 500                  # Phase 0 cap; raise later
     render_js: auto
     expand_interactive: true        # open accordions, tabs, carousels, "read more"
-    politeness: { rps: 1, respect_robots: true, user_agent: "BrandGuard/0.1 (brand compliance review)" }
+    politeness:                     # D17: independent test → conservative defaults
+      rps: 0.5                      # 1 request every 2 s (or the site's Crawl-delay if higher)
+      respect_robots: true
+      max_concurrency: 1
+      stop_on_blocks: true          # pause the run after repeated 403/429/challenge pages
+      user_agent: "BrandGuard/0.1 (independent brand-compliance test; contact: <your email>)"
+    preflight_acknowledged: false   # set in the UI after reviewing robots.txt and terms of use (§8.1)
     schedule: null                  # manual runs to start with
 ```
 
@@ -175,9 +185,9 @@ Brand ─ Site ─ Run ─ Asset ─ Segment ─ Finding ─ Rule
 - `metadata`: `<title>`, `<meta>`, OpenGraph/Twitter, JSON-LD, document properties, EXIF/XMP/IPTC, ID3, PDF bookmarks and annotations
 - `spoken`: speech-to-text from video or audio
 
-**Source text vs rendered text:** a heading stored as "Pfizer" but styled with CSS `text-transform: uppercase`
-*shows* as "PFIZER". We keep the **source text** for spelling checks and record the transform, so styling
-doesn't produce false violations (see Q1).
+**Source text vs rendered text:** a heading stored as "pfizer" but styled with CSS `text-transform: capitalize/uppercase`
+*shows* as "Pfizer"/"PFIZER". We check the **source text** and record the transform. Since all caps is allowed (D13),
+this mainly matters for the reverse case: source text that is wrong but hidden by styling is still reported, with a note.
 
 No workflow state on findings. A **suppression list** (a rule exception or an allow-listed URL) is the only way
 to silence a known false positive, and it is itself config.
@@ -204,12 +214,12 @@ Decision: crawl with **Playwright directly**; use a live-browser tool only insid
 
 **Scorecard** (measured on the same 500 pfizer.com pages): pages discovered · files found (PDF, images, Office, video) ·
 text sources captured (visible / hidden / metadata) · runtime and CPU/RAM on the laptop · errors and blocks ·
-lines of glue code · Windows/macOS install friction.
+lines of glue code · Windows install friction.
 The **DOM extractor** (§5.2) is written once and plugged into both, so the comparison is fair.
 
 **Crawler behaviour**
-- Discovers pages from the sitemap and links, within `allowed_domains` only. Third-party iframes, embeds and assets on other domains are logged as *skipped – out of scope*
-- Respects robots.txt and a low request rate, and identifies itself clearly in the User-Agent. **If the site's bot protection blocks the crawler, we report it and stop. No evasion techniques are used**
+- Discovers pages from the sitemap and links, within `allowed_domains` only (`www.pfizer.com`). Links and files on other `*.pfizer.com` subdomains are logged as *skipped – subdomain*. Third-party iframes, embeds and assets on other domains are logged as *skipped – out of scope*
+- Runs a **pre-flight check** before the first crawl (§8.1), then respects robots.txt (including `Crawl-delay`), crawls one page at a time, and identifies itself clearly in the User-Agent. **If the site's bot protection blocks the crawler, we report it and stop. No evasion techniques are used**
 - Pages behind a login or returning 401/403 are skipped and logged
 - For each page: DOM snapshot, full-page screenshot, and every linked or embedded same-domain file
 
@@ -272,7 +282,7 @@ that opens one page live. It needs no Node.js and no MCP server; Playwright MCP 
 
 | Setting | Default / notes |
 |---|---|
-| API key | Pasted once; stored in the **OS keychain** (`keyring`: Windows Credential Manager / macOS Keychain / Linux Secret Service); UI shows `••••1234` only; replace/remove buttons |
+| API key | Pasted once; stored in **Windows Credential Manager** (via `keyring`); UI shows `••••1234` only; replace/remove buttons |
 | Model per task | `gemini-2.5-flash` for judge, fallback and assistant; dropdowns filled from the live model list. A warning appears if a configured model disappears from the list (Google retires model versions over time) |
 | Generation params | temperature 0.1 for judge, 0.4 for assistant; max output tokens; thinking budget (2.5 Flash supports it; low for judge); JSON mode for judge |
 | Safety settings | Relaxed defaults (pharma terms such as dosage and side effects can trip filters) |
@@ -286,7 +296,7 @@ that opens one page live. It needs no Node.js and no MCP server; Playwright MCP 
 1. **Deterministic tier** (every segment): normalize → exact match against allowed and disallowed forms →
    fuzzy near-miss (Latin) / character match (CJK) → exceptions (URLs, emails, @handles, #hashtags, file names, ticker) →
    result `violation` / `ok` / `ambiguous`, with confidence.
-   Examples for Pfizer: `Phizer` ❌ · `pfizer` in a sentence ❌ · `pfizer.com` ⏭ exception · `Pfizer's` ✅ · `Pfizer-BioNTech` ✅ · `Pfzier` ⚠ fuzzy → judge.
+   Examples for Pfizer: `Phizer` ❌ · `pfizer` in a sentence ❌ · `PFizer` ❌ · `PFIZER` ✅ · `pfizer.com` ⏭ exception · `Pfizer's` ✅ · `Pfizer-BioNTech` ✅ · `Pfzier` ⚠ fuzzy → judge.
    **Spoken** segments are checked for mention only, not spelling. Low-confidence OCR is marked `ambiguous`.
 2. **Gemini tier:** only for `ambiguous` segments.
 3. **Rule sandbox (UI):** paste text, upload a file or enter one URL, then see the results before saving a rule version.
@@ -294,6 +304,7 @@ that opens one page live. It needs no Node.js and no MCP server; Playwright MCP 
 ### 5.6 Jobs & scheduling (no Redis, no Postgres)
 
 - ✅ **Huey** (MIT) with its **SQLite** storage: task queue, retries and priorities in a local file. The worker runs as a child process of the app
+- **Windows note:** Huey runs with **thread workers**; CPU-heavy steps (OCR, Docling, Whisper) are sent to a Python `ProcessPoolExecutor`, which uses Windows' *spawn* start method. This avoids fork-based process workers, which don't work on Windows. It gets checked in Phase 0
 - Queues: `crawl`, `extract`, `media`, `rules`, `llm`, each with its own concurrency (set by the performance profile)
 - **Resumable:** jobs are stored on disk. After sleep, crash or restart, unfinished jobs continue, and idempotent steps make re-runs safe
 - **Run controls:** pause, resume and cancel from the UI
@@ -325,23 +336,41 @@ Because there is no Docker or Node on the laptop, we use Vue **without a build s
 - No `npm`, no bundler; edit a `.js` file and refresh the browser
 - ◻ If the UI grows large later, the same Vue code can move to a Vite build with little change
 
-### 5.10 Installation & running on the laptop
+### 5.10 Installation & running on a Windows laptop
 
 ```
-Requirements: Python 3.11+ · ~4 GB free disk (Chromium, OCR/Whisper models, Docling models) · 8 GB RAM minimum, 16 GB recommended
-Install:      pip install brandguard        (or: uv tool install brandguard)
-              brandguard setup              → downloads Chromium, OCR & Whisper models, ffmpeg; creates ~/BrandGuard/
-Run:          brandguard start              → http://localhost:8080
+Requirements: Windows 10/11 (64-bit) · Python 3.11 or 3.12 (python.org installer or `uv`) · no admin rights needed
+              ~4 GB free disk (Chromium, OCR/Whisper/Docling models) · 8 GB RAM minimum, 16 GB recommended
+Install:      PowerShell →  uv tool install brandguard     (or: py -m pip install brandguard)
+              brandguard setup      → downloads Chromium (%LOCALAPPDATA%\ms-playwright), OCR & Whisper models,
+                                      ffmpeg; creates %USERPROFILE%\BrandGuard\
+Run:          brandguard start      → opens http://localhost:8080
+Optional:     setup creates a Start-menu / desktop shortcut "BrandGuard" that runs the same command
 ```
+
+**Windows-specific choices**
+
+| Topic | Approach |
+|---|---|
+| Data folder | `%USERPROFILE%\BrandGuard\` (`data\`, `brandguard.db`, `queue.db`, `logs\`) |
+| Long paths | Files are stored under short hash names (e.g. `data\ab\ab12…ef.pdf`) to stay below the 260-character path limit; the original URL is kept in the database |
+| API key | Windows **Credential Manager** via `keyring` |
+| CJK fonts | Built-in Windows fonts (Microsoft YaHei, Yu Gothic, …) cover Chinese and Japanese screenshots, so nothing to install |
+| ffmpeg | `static-ffmpeg` downloads Windows binaries on first use |
+| Antivirus | Windows Defender scans every downloaded PDF/Office file, which slows extraction. The docs explain how to optionally exclude the data folder |
+| Sleep / shutdown | Jobs resume on the next `brandguard start`; a warning is shown if a run is started on battery power |
+| Legacy Office files | Converted only if LibreOffice for Windows is installed; otherwise *skipped – converter missing* |
+| Firewall | Server binds to `127.0.0.1`, so Windows Firewall doesn't prompt |
 
 | Performance profile | Browser pages | OCR/Docling workers | Speech-to-text | Use when |
 |---|---|---|---|---|
 | **Light** | 1 | 1 | Whisper `small`, 1 worker | you are working on the laptop |
-| **Balanced** (default) | 2 | 2 | `small` | normal |
-| **Max** | 4 | CPU cores − 2 | `medium` | overnight |
+| **Balanced** (default) | 1 | 2 | `small` | normal |
+| **Max** | 1 | CPU cores − 2 | `medium` | overnight |
+
+(Browser pages stay at **1** for pfizer.com because of the conservative crawl policy; profiles only change local processing.)
 
 Backup: *Settings → Export* creates a zip with the config YAML, the SQLite database and the data folder. *Import* restores it.
-Works on Windows, macOS and Linux (confirmed in the Phase 0 spike).
 
 ---
 
@@ -366,7 +395,7 @@ A brand switcher appears once there is more than one brand.
 | **Evidence viewer** | Left: evidence in context (page screenshot with highlight, PDF page with box, image with box, video at timestamp, or **HTML/metadata snippet with DOM path** for hidden and metadata text). Right: found text, expected "Pfizer", rule, confidence, Gemini explanation, live URL |
 | **Explorer** | Site → page → files; every extracted segment by source and visibility; skipped items and why |
 | **Runs** | Start run (full / incremental / single URL / re-evaluate only); live progress per pipeline step; pause/resume/cancel; errors and logs |
-| **Sites** | Add-site wizard: URL → sitemap detection → preview pages and file mix → scope → brand |
+| **Sites** | Add-site wizard: URL → **pre-flight check** (robots.txt rules, Crawl-delay, sitemap, link to terms of use, acknowledgement tick box) → preview pages and file mix → scope → brand |
 | **Rules** | Brand terms (allowed forms, sub-brands, disallowed misspellings, exceptions, per-locale forms), glossary import/export, rule form + YAML toggle, **sandbox** |
 | **Settings** | Gemini (§5.4), performance profile, OCR/speech-to-text options, politeness, suppression list, retention and disk usage, export/import |
 | **Assistant drawer** | Gemini chat aware of the current screen, e.g. *"Which PDFs spell Pfizer in lowercase?"* or *"Open this page live and check the footer"* |
@@ -388,11 +417,13 @@ A brand switcher appears once there is more than one brand.
 | `<meta name="description">` | metadata | "pfizer is a global…" | ❌ lowercase in running text |
 | JSON-LD `"name"` | metadata | "Pfizer Inc." | ✅ allowed form |
 | `display:none` promo block | hidden | "PFizer Oncology" | ❌ casing |
+| Hero banner text | visible | "PFIZER" | ✅ all caps allowed |
 | Accordion (expanded by crawler) | visible | "Pfizer's pipeline" | ✅ |
 | Link `href` | — | `https://www.pfizer.com/news` | ⏭ exception (URL) |
 | Footer | visible | "@pfizer" / "#Pfizer" | ⏭ exception (handle / hashtag) |
-| Heading with CSS uppercase | visible | source "Pfizer" → shows "PFIZER" | ✅ (source text correct, transform recorded) |
-| PDF annual report p.12 | visible | "Pfizer-BioNTech" | ✅ co-brand |
+| Heading with CSS capitalize | visible | source "pfizer" → shows "Pfizer" | ❌ source text wrong (note: hidden by styling) |
+| PDF annual report p.12 | visible | "Pfizer-BioNTech" | ✅ "Pfizer" part correct |
+| Image hosted on another `*.pfizer.com` subdomain | — | — | ⏭ skipped (subdomain, D15) |
 | PDF properties → Author | metadata | "pfizer inc" | ❌ casing |
 | Banner image OCR (0.61) | visible | "Pfzer" | ⚠ ambiguous → Gemini vision reads "Pfizer" → ✅ |
 | Video 00:35 spoken | spoken | "at pfizer we…" | ℹ mention (spelling not checked) |
@@ -402,7 +433,27 @@ A brand switcher appears once there is more than one brand.
 
 ## 8. Non-functional
 
-- **Politeness and legality:** robots.txt, 1 request/second by default, clear User-Agent, public pages only, no bot-protection evasion. Check that pfizer.com's terms of use allow automated review, or get the site owner's OK
+### 8.1 Responsible crawling for an independent test (D17)
+
+Because we are not the site owner, the crawler is deliberately conservative:
+
+| Measure | Default |
+|---|---|
+| **Pre-flight check** (before the first run of any site) | Fetches and shows `robots.txt` (disallowed paths, `Crawl-delay`, sitemaps), links to the site's terms of use, and requires the user to tick *"I have reviewed the robots.txt and terms of use"*. Runs can't start until this is done |
+| robots.txt | Always respected; can't be turned off for sites marked *independent* |
+| Rate | 1 request every 2 seconds (or the site's `Crawl-delay` if longer), one page at a time, files fetched with the same limit |
+| Volume | Page cap (500 in Phase 0); full-site runs at most weekly |
+| Identity | Honest User-Agent naming the tool and a contact email; no browser fingerprint spoofing |
+| Blocks | After repeated 403/429 responses or a bot-challenge page, the run **pauses** and reports it. No CAPTCHA solving, proxy rotation or stealth plugins |
+| Incremental | Later runs use `ETag`/`Last-Modified` so unchanged files aren't downloaded again |
+| Use of content | Downloaded files stay on the laptop for analysis only; retention settings delete raw files after the review |
+| Results | Findings about a third-party site are for internal use; the UI and reports carry a note that this is an independent, automated test and may contain false positives |
+
+> Before the first run, review pfizer.com's robots.txt and terms of use yourself (the pre-flight screen links to both).
+> If the terms prohibit automated access, don't run the crawl. Use a site you own or have permission for instead.
+
+### 8.2 Other
+
 - **Incremental:** ETag/Last-Modified + sha256; rule changes re-evaluate without re-crawling
 - **Audit:** every finding records run, config version, rule version, extractor and model version
 - **Safety:** sandboxed Chromium, file-size and decompression limits, Office macros never executed
@@ -451,7 +502,7 @@ docs/
 
 | Phase | Scope |
 |---|---|
-| **0 – Spike (pfizer.com)** | Up to 500 pages of www.pfizer.com; **Crawlee vs Crawl4AI** side by side with the shared DOM walker; web-page text (visible, hidden, metadata) + PDFs; "Pfizer" spelling rule; results to CSV plus a one-page HTML summary; measure laptop CPU/RAM/runtime; confirm Windows/macOS install |
+| **0 – Spike (pfizer.com)** | Pre-flight check of robots.txt and terms of use; up to 500 pages of www.pfizer.com at 1 request / 2 s; **Crawlee vs Crawl4AI** side by side with the shared DOM walker; web-page text (visible, hidden, metadata) + PDFs; "Pfizer" spelling rule; results to CSV plus a one-page HTML summary; measure laptop CPU/RAM/runtime; confirm the Windows install (Playwright, Docling, RapidOCR, faster-whisper, Huey + process pool) |
 | **1 – MVP** | UI (Overview, Compliance, Findings, Evidence, Runs, Sites, Rules, Settings); images + OCR; Office via Docling; Gemini settings + rule judge + vision fallback; CSV/XLSX export; full-site crawl |
 | **2 – Media & Assistant** | Same-domain video/audio; AI assistant with tools and live-page check; schedules; run diffs; more Pfizer sites and languages (ja, zh, es, de) |
 | **3 – Visual brand** | Logo, color and typography rules; tone-of-voice rules |
@@ -460,11 +511,10 @@ docs/
 
 ## 13. Open questions
 
-Resolved in v0.4: paid tier with `gemini-2.5-flash` · no Docker · first target pfizer.com / "Pfizer" · hidden text at full weight · try both crawlers.
+Resolved in v0.5: all caps allowed · no sub-brand rules · `www.pfizer.com` only · Windows laptop · independent test.
 
-Still open:
-1. **All caps:** is **"PFIZER"** written in capitals (in the source text, a PDF or an image) allowed, e.g. in headings or the logo, or always a violation? (CSS-uppercased headings are already treated as correct.)
-2. **Sub-brands and co-brands:** which one-word or hyphenated forms are approved, e.g. *PfizerPro*, *PfizerForAll*, *Pfizer-BioNTech*? Is there an official list?
-3. **Scope of pfizer.com:** only `www.pfizer.com`, or also its subdomains and file hosts (e.g. `cdn.pfizer.com`, `labeling.pfizer.com`, investor pages)? Labeling PDFs could add thousands of documents.
-4. **Laptop OS:** Windows or macOS (Apple Silicon or Intel)? This affects install testing and default profiles.
-5. **Authorization:** is the review being done by or for Pfizer (site owner OK to crawl), or is this an independent test? This decides how carefully we throttle and whether we need any sign-off.
+Still open (none of these block the Phase 0 spike):
+1. **Laptop RAM:** 8 GB or 16 GB+? With 8 GB, Docling would run one document at a time and Whisper would use the `base` model.
+2. **Contact email in the User-Agent:** which address should the crawler show (courtesy to the site operator)? It can be left blank, but including one is good practice.
+3. **Spike output:** is a CSV + a one-page HTML summary enough for Phase 0, or do you want the first UI screens already in the spike?
+4. **Findings on hidden-by-styling text** (source "pfizer" shown as "Pfizer" by CSS): report as a normal violation (default) or as a lower-severity note?
