@@ -6,10 +6,11 @@ metadata, images, PDFs, Office files, video and audio. The first target is check
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 
-> **Status: Phase 0, build step 4 (PDFs and the brand-name rule).** Sites are crawled with
-> **Crawlee** or **Crawl4AI**; page text (visible, hidden, metadata) and PDF text are checked
-> against the **"Pfizer" spelling rule**, which you can edit and test in **Rules**. The findings
-> list and evidence viewer (step 5) and Gemini (step 6) come next.
+> **Status: Phase 0, build step 5 (findings, evidence and dashboards).** Sites are crawled with
+> **Crawlee** or **Crawl4AI**; page and PDF text is checked against the **"Pfizer" spelling rule**.
+> **Findings** lists every problem with filters and CSV export, each with its evidence;
+> **Compliance** and **Overview** show the score and compare the two crawlers. Gemini (step 6)
+> and testing on Windows (step 7) come next.
 
 ## Run it on Windows
 
@@ -79,6 +80,20 @@ What gets reported: wrong letter case (`pfizer`, `PFizer`), known misspellings (
 name split in two (`Pfi zer`), possible misspellings to review (`Pfzier`), and another market's
 local name on a page.
 
+### Findings, evidence and the dashboards
+
+- **Findings**: every problem in a crawl, filterable by status, type, where in the page
+  (visible / hidden / metadata), web page or PDF, severity, text source, and whether it's
+  **new** or **still there** since the previous crawl (fixed ones are counted). **Export CSV**
+  opens in Excel with Japanese and Chinese text intact.
+- **Evidence** (click a finding): the page screenshot with the spot boxed, the PDF page with
+  the line boxed, or, for hidden text and metadata, the saved HTML with the word highlighted.
+- **Compliance**: the score (100 minus 10 per high-severity violation per page or PDF,
+  averaged; hidden text and metadata count fully), the share of clean pages, breakdowns and
+  the lowest-scoring pages.
+- **Overview**: the latest results and **Crawlee vs Crawl4AI** side by side (pages, files,
+  text found, violations, time, memory, CPU, and pages only one of them reached).
+
 Upgrading from an earlier step keeps your data: the database is migrated automatically on start.
 
 ### Commands
@@ -105,6 +120,7 @@ brandguard/
                     adapters for Crawlee and Crawl4AI, runner); files.py and extract/pdf.py
                     (PDFs); evaluate.py (findings)
   rules/            brand_name.py (the rule), defaults.py (Pfizer), service.py (versions, YAML)
+  reporting.py      scores, findings with changes between crawls, evidence, crawler comparison
   jobs/             Huey queue (SQLite file), tasks, worker process
   web/              UI: plain HTML + ES-module JS with Vue 3 (no build step)
     vendor/         third-party JS, vendored by scripts/vendor.py

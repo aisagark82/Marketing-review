@@ -21,6 +21,14 @@ REGISTRY = "https://registry.npmjs.org"
 # package -> (version, {file inside the tarball: output file name})
 PACKAGES = {
     "vue": ("3.5.43", {"package/dist/vue.global.prod.js": "vue.global.prod.js"}),
+    # PDF.js ships ES modules as .mjs; saved as .js so every OS serves them as JavaScript.
+    "pdfjs-dist": (
+        "5.4.624",  # 5.5+ needs Map.getOrInsertComputed (2026 browsers only)
+        {
+            "package/build/pdf.min.mjs": "pdf.min.js",
+            "package/build/pdf.worker.min.mjs": "pdf.worker.min.js",
+        },
+    ),
 }
 
 

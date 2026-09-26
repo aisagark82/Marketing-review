@@ -1,4 +1,6 @@
 import { api } from "./api.js";
+import ComplianceScreen from "./screens/compliance.js";
+import FindingsScreen from "./screens/findings.js";
 import OverviewScreen from "./screens/overview.js";
 import PlaceholderScreen from "./screens/placeholder.js";
 import RunsScreen from "./screens/runs.js";
@@ -11,10 +13,8 @@ const { createApp, ref, computed, onMounted, onBeforeUnmount } = Vue;
 // `step` marks screens that arrive in a later Phase 0 build step.
 const ROUTES = [
   { id: "overview", label: "Overview", component: OverviewScreen },
-  { id: "compliance", label: "Compliance", step: 5,
-    about: "Compliance score, breakdowns by visibility, asset type and text source, and the crawler comparison." },
-  { id: "findings", label: "Findings", step: 5,
-    about: "Every place the brand name is misspelled, with filters, CSV export and the evidence viewer." },
+  { id: "compliance", label: "Compliance", component: ComplianceScreen },
+  { id: "findings", label: "Findings", component: FindingsScreen },
   { id: "runs", label: "Runs", component: RunsScreen },
   { id: "sites", label: "Sites", component: SitesScreen },
   { id: "rules", label: "Rules", component: RulesScreen },

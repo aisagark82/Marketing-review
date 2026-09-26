@@ -64,3 +64,32 @@ export const FINDING_KINDS = {
   near_miss: "Possible misspelling",
   wrong_market_form: "Another market's name",
 };
+
+export const FINDING_STATUS = {
+  violation: { text: "Violation", cls: "bad" },
+  ambiguous: { text: "To review", cls: "warn" },
+};
+
+export const CHANGE = {
+  new: { text: "New", cls: "bad" },
+  persisting: { text: "Still there", cls: "" },
+};
+
+const SOURCES = {
+  text: "Page text", heading: "Heading", link: "Link text", button: "Button",
+  form_label: "Form label", form_option: "Form option", svg_text: "SVG text",
+  css_content: "CSS-generated text", noscript: "No-JavaScript text", hidden_input: "Hidden form value",
+  title: "Page title", json_ld: "Structured data (JSON-LD)",
+  "attr:alt": "Image alt text", "attr:title": "Tooltip (title)", "attr:aria-label": "Accessibility label",
+  "attr:aria-description": "Accessibility description", "attr:placeholder": "Placeholder",
+  pdf_text: "PDF text", pdf_bookmark: "PDF bookmark", pasted: "Pasted text",
+};
+
+export function sourceLabel(source) {
+  if (SOURCES[source]) return SOURCES[source];
+  if (source.startsWith("meta:")) return `Meta tag ${source.slice(5)}`;
+  if (source.startsWith("pdf_meta:")) return `PDF ${source.slice(9)}`;
+  return source;
+}
+
+export const ASSET_KINDS = { page: "Web pages", pdf: "PDFs" };

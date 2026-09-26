@@ -5,5 +5,13 @@
     "files": [
       "vue.global.prod.js"
     ]
+  },
+  "pdfjs-dist": {
+    "version": "5.4.624",
+    "integrity": "sha512-sm6TxKTtWv1Oh6n3C6J6a8odejb5uO4A4zo/2dgkHuC0iu8ZMAXOezEODkVaoVp8nX1Xzr+0WxFJJmUr45hQzg==",
+    "files": [
+      "pdf.min.js",
+      "pdf.worker.min.js"
+    ]
   }
 }

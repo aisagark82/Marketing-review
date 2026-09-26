@@ -71,6 +71,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def _port_is_free(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if sys.platform != "win32":
+            # Like the web server itself: a port left in TIME_WAIT by the previous run (just
+            # after Ctrl+C) is free to use. (On Windows this option would allow sharing a port
+            # that's really in use, and TIME_WAIT doesn't block binding there anyway.)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
         except OSError:
