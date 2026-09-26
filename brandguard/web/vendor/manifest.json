@@ -1,0 +1,9 @@
+{
+  "vue": {
+    "version": "3.5.43",
+    "integrity": "sha512-o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng==",
+    "files": [
+      "vue.global.prod.js"
+    ]
+  }
+}

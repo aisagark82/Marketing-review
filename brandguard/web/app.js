@@ -1,0 +1,97 @@
+import { api } from "./api.js";
+import OverviewScreen from "./screens/overview.js";
+import PlaceholderScreen from "./screens/placeholder.js";
+import RunsScreen from "./screens/runs.js";
+import SettingsScreen from "./screens/settings.js";
+
+const { createApp, ref, computed, onMounted, onBeforeUnmount } = Vue;
+
+// `step` marks screens that arrive in a later Phase 0 build step.
+const ROUTES = [
+  { id: "overview", label: "Overview", component: OverviewScreen },
+  { id: "compliance", label: "Compliance", step: 5,
+    about: "Compliance score, breakdowns by visibility, asset type and text source, and the crawler comparison." },
+  { id: "findings", label: "Findings", step: 5,
+    about: "Every place the brand name is misspelled, with filters, CSV export and the evidence viewer." },
+  { id: "runs", label: "Runs", component: RunsScreen },
+  { id: "sites", label: "Sites", step: 2,
+    about: "Configure www.pfizer.com and run the pre-flight check of robots.txt and the terms of use." },
+  { id: "rules", label: "Rules", step: 4,
+    about: "The Pfizer brand-name rule: allowed casings, disallowed spellings, exceptions and a test sandbox." },
+  { id: "settings", label: "Settings", component: SettingsScreen },
+];
+
+const SYSTEM_POLL_MS = 5000;
+
+const App = {
+  setup() {
+    const currentId = ref("overview");
+    const system = ref(null);
+    const systemError = ref(null);
+    let timer = null;
+
+    const syncRoute = () => {
+      const id = location.hash.replace(/^#\/?/, "");
+      currentId.value = ROUTES.some((r) => r.id === id) ? id : "overview";
+    };
+
+    const loadSystem = async () => {
+      try {
+        system.value = await api.get("/system");
+        systemError.value = null;
+      } catch (error) {
+        systemError.value = error.message;
+      }
+    };
+
+    onMounted(() => {
+      syncRoute();
+      window.addEventListener("hashchange", syncRoute);
+      loadSystem();
+      timer = setInterval(loadSystem, SYSTEM_POLL_MS);
+    });
+    onBeforeUnmount(() => {
+      window.removeEventListener("hashchange", syncRoute);
+      clearInterval(timer);
+    });
+
+    const route = computed(() => ROUTES.find((r) => r.id === currentId.value));
+    const workerPill = computed(() => {
+      if (systemError.value) return { cls: "bad", text: "Server unreachable" };
+      if (!system.value) return { cls: "", text: "Connecting…" };
+      return system.value.worker.online
+        ? { cls: "ok", text: "Worker online" }
+        : { cls: "warn", text: "Worker offline" };
+    });
+
+    return { routes: ROUTES, route, system, workerPill, PlaceholderScreen };
+  },
+  template: `
+    <div class="layout">
+      <nav class="sidebar" aria-label="Main">
+        <div class="logo">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 7v8c0 7.5 5.1 13.3 12 15 6.9-1.7 12-7.5 12-15V7z"/></svg>
+          BrandGuard
+        </div>
+        <a v-for="r in routes" :key="r.id" :href="'#/' + r.id"
+           class="nav-link" :class="{ active: r.id === route.id }">
+          <span>{{ r.label }}</span>
+          <span v-if="r.step" class="soon">step {{ r.step }}</span>
+        </a>
+        <div class="sidebar-footer" v-if="system">v{{ system.version }}</div>
+      </nav>
+      <div class="main">
+        <header class="topbar">
+          <h1>{{ route.label }}</h1>
+          <span class="pill" :class="workerPill.cls">{{ workerPill.text }}</span>
+        </header>
+        <main class="content">
+          <component v-if="route.component" :is="route.component" :system="system" />
+          <component v-else :is="PlaceholderScreen" :route="route" />
+        </main>
+      </div>
+    </div>
+  `,
+};
+
+createApp(App).mount("#app");
