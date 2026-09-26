@@ -2,8 +2,9 @@
 
 - selftest: proves the loop UI -> API -> queue -> worker -> database -> live progress
 - preflight: robots.txt / start page / sitemap / terms check for a site (design §8.1)
+- crawl: crawl a ready site with Crawlee or Crawl4AI, extracting text segments
 
-Crawl, extract and evaluate tasks are added in later steps.
+Extract (files) and evaluate (rules) tasks are added in later steps.
 """
 
 import logging
@@ -151,4 +152,77 @@ def preflight(run_id: int) -> None:
     _finish(run_id, RunStatus.COMPLETED, step=None, message=result["summary"])
 
 
-TASKS: dict[str, Callable] = {"selftest": selftest, "preflight": preflight}
+def crawl(run_id: int) -> None:
+    # Imported here: the crawler libraries are heavy and only the worker needs them.
+    from brandguard.pipeline.crawl.discovery import RobotsUnavailable
+    from brandguard.pipeline.crawl.runner import CrawlConfig, execute_crawl
+
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        site = run.site if run else None
+        if site is None:
+            return
+        contact = load_settings(session).crawler_contact_email
+        config = CrawlConfig(
+            run_id=run_id,
+            site_id=site.id,
+            crawler=run.params["crawler"],
+            start_urls=list(site.start_urls),
+            allowed_domains=list(site.allowed_domains),
+            include_patterns=list(site.include_patterns),
+            exclude_patterns=list(site.exclude_patterns),
+            max_pages=site.max_pages,
+            use_sitemap=site.use_sitemap,
+            respect_robots=site.respect_robots,
+            request_interval_s=site.request_interval_s,
+            javascript=site.render_js != "never",
+            expand_interactive=site.expand_interactive,
+            stop_on_blocks=site.stop_on_blocks,
+            user_agent=http.user_agent(site.independent, contact),
+            data_dir=get_paths().data_dir,
+        )
+    if not _start(run_id, config.max_pages):
+        return
+    _update(run_id, step="discovery", message="Reading robots.txt and the sitemap")
+
+    try:
+        stats, stop_reason = execute_crawl(
+            config, on_status=lambda message: _update(run_id, step="crawl", message=message)
+        )
+    except _Cancelled:
+        _finish(run_id, RunStatus.CANCELLED, message="Cancelled by user")
+        return
+    except RobotsUnavailable as exc:
+        _finish(
+            run_id,
+            RunStatus.FAILED,
+            error=str(exc),
+            message="robots.txt could not be read, so nothing was crawled",
+        )
+        return
+    except Exception as exc:
+        log.exception("Crawl run %s failed", run_id)
+        _finish(
+            run_id, RunStatus.FAILED, error=f"{type(exc).__name__}: {exc}", message="Crawl failed"
+        )
+        return
+
+    pages = stats["pages"]
+    summary = (
+        f"{pages.get('ok', 0)} pages crawled, {sum(stats['files'].values())} files found, "
+        f"{sum(stats['segments'].values())} text segments"
+    )
+    if stop_reason == "cancelled":
+        _finish(run_id, RunStatus.CANCELLED, stats=stats, message=f"Cancelled. {summary}")
+    elif stop_reason == "blocked":
+        _finish(
+            run_id,
+            RunStatus.BLOCKED,
+            stats=stats,
+            message=f"Stopped: the site started refusing requests. {summary}",
+        )
+    else:
+        _finish(run_id, RunStatus.COMPLETED, step=None, stats=stats, message=summary)
+
+
+TASKS: dict[str, Callable] = {"selftest": selftest, "preflight": preflight, "crawl": crawl}

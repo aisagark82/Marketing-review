@@ -364,7 +364,7 @@ def _check_start_page(
     return report, links, [Check("start-page", "Start page", "ok", detail + ".")]
 
 
-def _parse_sitemap(body: bytes) -> tuple[str, list[str]]:
+def parse_sitemap(body: bytes) -> tuple[str, list[str]]:
     if body[:2] == b"\x1f\x8b":
         with gzip.GzipFile(fileobj=io.BytesIO(body)) as archive:
             body = archive.read(MAX_SITEMAP_DECOMPRESSED_BYTES + 1)
@@ -410,7 +410,7 @@ def _check_sitemaps(
             entry["error"] = fetched.error or f"HTTP {fetched.status_code}"
             continue
         try:
-            kind, locs = _parse_sitemap(fetched.body)
+            kind, locs = parse_sitemap(fetched.body)
         except Exception as exc:  # malformed, oversized or hostile XML
             entry["error"] = f"could not parse: {exc}"
             continue

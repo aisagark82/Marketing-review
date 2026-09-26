@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from brandguard.core.db import Base, UTCDateTime, utcnow
@@ -21,8 +21,9 @@ class RunStatus:
     FAILED = "failed"
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
+    BLOCKED = "blocked"  # the site started refusing requests, so the crawl stopped (design §8.1)
 
-    TERMINAL = frozenset({COMPLETED, FAILED, CANCELLED, INTERRUPTED})
+    TERMINAL = frozenset({COMPLETED, FAILED, CANCELLED, INTERRUPTED, BLOCKED})
 
 
 class Readiness:
@@ -123,6 +124,10 @@ class Run(Base):
     message: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    params: Mapped[dict | None] = mapped_column(JSON)  # e.g. {"crawler": "crawlee"}
+    stats: Mapped[dict | None] = mapped_column(
+        JSON
+    )  # crawl statistics, see pipeline/crawl/runner.py
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
@@ -132,3 +137,70 @@ class Run(Base):
     @property
     def site_name(self) -> str | None:
         return self.site.name if self.site else None
+
+
+class AssetKind:
+    PAGE = "page"
+    PDF = "pdf"
+    OFFICE = "office"
+    IMAGE = "image"
+    VIDEO = "video"
+    AUDIO = "audio"
+    SUBTITLE = "subtitle"
+    FRAME = "frame"  # an <iframe> on another host
+    OTHER = "other"
+
+
+class AssetStatus:
+    OK = "ok"  # fetched and extracted
+    FAILED = "failed"  # navigation error or HTTP error
+    BLOCKED = "blocked"  # the site refused (403/429/challenge page)
+    DISCOVERED = "discovered"  # a file found on a page; downloaded in a later step
+    SKIPPED = "skipped"  # out of scope; status_reason says why
+
+
+class Asset(Base):
+    """A page or file found during a crawl run."""
+
+    __tablename__ = "assets"
+    __table_args__ = (UniqueConstraint("run_id", "url", name="uq_assets_run_url"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    url: Mapped[str] = mapped_column(Text)
+    final_url: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    status_reason: Mapped[str | None] = mapped_column(String(200))
+    found_on_id: Mapped[int | None] = mapped_column(ForeignKey("assets.id"))
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    title: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str | None] = mapped_column(String(35))  # <html lang>, as declared by the page
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    html_path: Mapped[str | None] = mapped_column(Text)  # relative to the data folder
+    screenshot_path: Mapped[str | None] = mapped_column(Text)
+    info: Mapped[dict | None] = mapped_column(JSON)  # page size, segment counts, timings
+    fetched_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class Visibility:
+    VISIBLE = "visible"
+    HIDDEN = "hidden"
+    METADATA = "metadata"
+    SPOKEN = "spoken"  # speech-to-text, later steps
+
+
+class Segment(Base):
+    """One piece of text from an asset, with where it came from (design §4)."""
+
+    __tablename__ = "segments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    text_source: Mapped[str] = mapped_column(String(40))
+    visibility: Mapped[str] = mapped_column(String(10), index=True)
+    render_transform: Mapped[str | None] = mapped_column(String(20))  # CSS text-transform
+    locator: Mapped[dict | None] = mapped_column(JSON)  # selector, bbox, JSON path ...
+    extractor: Mapped[str] = mapped_column(String(40))

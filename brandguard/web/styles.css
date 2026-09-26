@@ -263,3 +263,20 @@ input[type="number"] {
 }
 label.check { display: flex; gap: 8px; align-items: flex-start; font-weight: normal; }
 label.check input { margin-top: 3px; }
+
+/* Step 3: crawl runs and page evidence */
+.tabs.compact { margin-bottom: 0; border-bottom: none; flex-wrap: wrap; }
+.tabs.compact button { padding: 6px 10px; }
+select { width: auto; }
+.evidence { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.shot-scroll { position: relative; max-height: 70vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.shot-scroll img { display: block; width: 100%; }
+.highlight {
+  position: absolute; border: 3px solid var(--bad); background: rgba(255, 0, 0, 0.08);
+  border-radius: 3px; pointer-events: none;
+}
+.segments { list-style: none; margin: 0; padding: 0; max-height: 70vh; overflow: auto; display: grid; gap: 2px; }
+.segments li { padding: 8px 10px; border-radius: 6px; cursor: pointer; word-break: break-word; }
+.segments li:hover { background: var(--surface-2); }
+.segments li.selected { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+@media (max-width: 900px) { .evidence { grid-template-columns: 1fr; } }

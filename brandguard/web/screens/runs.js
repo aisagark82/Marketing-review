@@ -1,19 +1,11 @@
 import { api, formatTime } from "../api.js";
-import { ACTIVE_RUN, RUN_KINDS } from "../labels.js";
+import { ACTIVE_RUN, CRAWLERS, RUN_KINDS, RUN_STATUS_CLASS as STATUS_CLASS } from "../labels.js";
+import RunDetail, { AssetView } from "./run-detail.js";
 
-const { ref, onMounted, onBeforeUnmount } = Vue;
+const { ref, computed, onMounted, onBeforeUnmount } = Vue;
 
-const STATUS_CLASS = {
-  queued: "",
-  running: "warn",
-  completed: "ok",
-  failed: "bad",
-  cancelled: "",
-  interrupted: "bad",
-};
-
-export default {
-  props: { system: Object, param: String },
+const RunList = {
+  props: { system: Object },
   setup() {
     const runs = ref([]);
     const error = ref(null);
@@ -73,9 +65,11 @@ export default {
     onMounted(load);
     onBeforeUnmount(() => [...watchers.keys()].forEach(unwatch));
 
+    const open = (run) => (location.hash = `#/runs/${run.id}`);
+
     return {
-      runs, error, starting, startSelftest, cancel, percent, formatTime,
-      STATUS_CLASS, ACTIVE_RUN, RUN_KINDS,
+      runs, error, starting, startSelftest, cancel, percent, formatTime, open,
+      STATUS_CLASS, ACTIVE_RUN, RUN_KINDS, CRAWLERS,
     };
   },
   template: `
@@ -95,11 +89,12 @@ export default {
         </thead>
         <tbody>
           <tr v-if="!runs.length"><td colspan="7" class="muted">No runs yet.</td></tr>
-          <tr v-for="run in runs" :key="run.id">
-            <td>{{ run.id }}</td>
+          <tr v-for="run in runs" :key="run.id" class="clickable" @click="open(run)">
+            <td><a :href="'#/runs/' + run.id" @click.stop>{{ run.id }}</a></td>
             <td>
               {{ RUN_KINDS[run.kind] || run.kind }}
-              <div v-if="run.site_name"><a :href="'#/sites/' + run.site_id" class="small">{{ run.site_name }}</a></div>
+              <span v-if="run.params?.crawler" class="muted"> · {{ CRAWLERS[run.params.crawler]?.label }}</span>
+              <div v-if="run.site_name"><a :href="'#/sites/' + run.site_id" class="small" @click.stop>{{ run.site_name }}</a></div>
             </td>
             <td><span class="pill" :class="STATUS_CLASS[run.status]">{{ run.status }}</span></td>
             <td>
@@ -111,7 +106,7 @@ export default {
             </td>
             <td class="muted">{{ formatTime(run.started_at || run.created_at) }}</td>
             <td>
-              <button v-if="ACTIVE_RUN.has(run.status)" :disabled="run.cancel_requested" @click="cancel(run)">
+              <button v-if="ACTIVE_RUN.has(run.status)" :disabled="run.cancel_requested" @click.stop="cancel(run)">
                 {{ run.cancel_requested ? 'Cancelling…' : 'Cancel' }}
               </button>
             </td>
@@ -119,5 +114,22 @@ export default {
         </tbody>
       </table>
     </div>
+  `,
+};
+
+// #/runs, #/runs/12 (a run) or #/runs/12/assets/34 (a crawled page)
+export default {
+  components: { RunList, RunDetail, AssetView },
+  props: { system: Object, param: String },
+  setup(props) {
+    const parts = computed(() => (props.param || "").split("/").filter(Boolean));
+    const runId = computed(() => Number(parts.value[0]) || null);
+    const assetId = computed(() => (parts.value[1] === "assets" ? Number(parts.value[2]) : null));
+    return { runId, assetId };
+  },
+  template: `
+    <AssetView v-if="assetId" :run-id="runId" :asset-id="assetId" :key="'a' + assetId" />
+    <RunDetail v-else-if="runId" :run-id="runId" :key="'r' + runId" />
+    <RunList v-else :system="system" />
   `,
 };

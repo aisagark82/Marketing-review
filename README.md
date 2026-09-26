@@ -6,9 +6,10 @@ metadata, images, PDFs, Office files, video and audio. The first target is check
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 
-> **Status: Phase 0, build step 2 (sites and pre-flight check).** The app starts, sites can be
-> configured, and the pre-flight check reads a site's robots.txt, start page, sitemap and terms-of-use
-> links before anything is crawled. Crawling, extraction, rules and findings come in the next steps.
+> **Status: Phase 0, build step 3 (crawling).** Sites can be configured, pre-flight checked and
+> crawled with **Crawlee** or **Crawl4AI**. Every page's text is extracted (visible, hidden and
+> metadata) with a screenshot, and files (PDFs, Office, images, video) are listed. Downloading
+> those files, the brand-name rule and findings come in the next steps.
 
 ## Run it on Windows
 
@@ -20,7 +21,7 @@ py -m venv .venv
 .venv\Scripts\activate
 pip install -e .
 
-brandguard setup     # creates %USERPROFILE%\BrandGuard\ (database, job queue, data folder)
+brandguard setup     # creates %USERPROFILE%\BrandGuard\ and downloads Chromium (~150 MB, once)
 brandguard start     # starts the web server + worker and opens http://localhost:8080
 ```
 
@@ -42,18 +43,35 @@ Read robots.txt and the terms of use yourself, then tick the box and **Acknowled
 only be crawled once it shows **Ready to crawl**. Changing its start URLs or allowed domains
 withdraws the acknowledgement until the check is run again.
 
-Upgrading from step 1 keeps your data: the database is migrated automatically on start.
+### Crawling
+
+Once a site shows **Ready to crawl**, open its **Crawl** tab, pick **Crawlee** or **Crawl4AI** and
+click **Start crawl**. Both use the same text extraction, so their results can be compared. The
+run page shows live progress, then statistics (pages, files, text segments, time, memory) and every
+page's text next to its screenshot. Pick a text to see where it is on the page.
+
+What the crawler does, whichever library runs it:
+
+- requests one page at a time, waiting the configured interval (or robots.txt's Crawl-delay if longer)
+- identifies itself honestly: no fake User-Agent, browser fingerprints or evasion flags
+- stays on the allowed domains; links elsewhere are listed as "not crawled" with the reason, and
+  redirects or iframes leading off-site are stopped in the browser
+- opens accordions and `<details>` before reading, and records text hidden by CSS as **hidden**
+- stops after three refusals in a row (403/429/challenge pages) and reports the run as **blocked**
+
+Upgrading from an earlier step keeps your data: the database is migrated automatically on start.
 
 ### Commands
 
 | Command | What it does |
 |---|---|
-| `brandguard setup` | Creates the home folder, SQLite database and job queue |
+| `brandguard setup [--skip-browser]` | Creates the home folder, database and job queue; downloads Chromium |
 | `brandguard start [--port 8080] [--no-browser]` | Starts the web server and the background worker |
 | `brandguard worker` | Runs only the background worker (for debugging) |
 | `brandguard version` | Prints the version |
 
-Set `BRANDGUARD_HOME` to keep data somewhere other than `%USERPROFILE%\BrandGuard`.
+Set `BRANDGUARD_HOME` to keep data somewhere other than `%USERPROFILE%\BrandGuard`, and
+`BRANDGUARD_CHROMIUM_PATH` to use a Chromium other than the one `setup` downloads.
 
 ## Project layout
 
@@ -63,7 +81,8 @@ brandguard/
   api/              FastAPI app and routes (REST + Server-Sent Events)
   core/             paths, SQLite database, models, migrations runner, settings, HTTP client
   migrations/       Alembic schema migrations (applied automatically at start-up)
-  pipeline/         preflight.py (crawling, extraction and rules arrive in later steps)
+  pipeline/         preflight.py; crawl/ (policy, discovery, walker.js, capture, recorder,
+                    adapters for Crawlee and Crawl4AI, runner)
   jobs/             Huey queue (SQLite file), tasks, worker process
   web/              UI: plain HTML + ES-module JS with Vue 3 (no build step)
     vendor/         third-party JS, vendored by scripts/vendor.py

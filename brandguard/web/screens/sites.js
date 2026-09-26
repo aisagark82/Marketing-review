@@ -1,5 +1,5 @@
 import { api, formatTime } from "../api.js";
-import { ACTIVE_RUN, READINESS } from "../labels.js";
+import { ACTIVE_RUN, CRAWLERS, READINESS, RUN_STATUS_CLASS } from "../labels.js";
 
 const { ref, computed, watch, onBeforeUnmount } = Vue;
 
@@ -254,8 +254,72 @@ const SiteForm = {
   `,
 };
 
+const CrawlPanel = {
+  props: { site: Object },
+  setup(props) {
+    const crawler = ref("crawlee");
+    const runs = ref([]);
+    const error = ref(null);
+    const starting = ref(false);
+    const load = async () => {
+      const all = await api.get("/runs");
+      runs.value = all.filter((r) => r.kind === "crawl" && r.site_id === props.site.id);
+    };
+    const start = async () => {
+      starting.value = true;
+      error.value = null;
+      try {
+        const run = await api.post(`/sites/${props.site.id}/crawl`, { crawler: crawler.value });
+        location.hash = `#/runs/${run.id}`;
+      } catch (e) {
+        error.value = e.message;
+      } finally {
+        starting.value = false;
+      }
+    };
+    load();
+    return { crawler, runs, error, starting, start, formatTime, CRAWLERS, RUN_STATUS_CLASS, ACTIVE_RUN };
+  },
+  template: `
+    <div v-if="site.readiness !== 'ready'" class="banner">
+      Finish the pre-flight check and acknowledge it before crawling this site.
+    </div>
+    <div v-else class="card">
+      <h2>Start a crawl</h2>
+      <p class="muted">
+        Up to {{ site.max_pages }} pages, {{ site.preflight_result?.effective_interval_s ?? site.request_interval_s }} s between
+        requests. Both crawlers use the same text extraction, so their results can be compared.
+      </p>
+      <div class="radio-cards">
+        <label v-for="(c, id) in CRAWLERS" :key="id" class="radio-card" :class="{ selected: crawler === id }">
+          <input type="radio" name="crawler" :value="id" v-model="crawler" />
+          <div class="title">{{ c.label }}</div>
+          <div class="desc">{{ c.about }}</div>
+        </label>
+      </div>
+      <div class="toolbar section">
+        <button class="primary" :disabled="starting || runs.some((r) => ACTIVE_RUN.has(r.status))" @click="start">Start crawl</button>
+        <span v-if="runs.some((r) => ACTIVE_RUN.has(r.status))" class="muted">A crawl is already running.</span>
+      </div>
+      <p v-if="error" class="error-text">{{ error }}</p>
+    </div>
+    <div class="card section" v-if="runs.length">
+      <h2>Crawls of this site</h2>
+      <table><tbody>
+        <tr v-for="r in runs" :key="r.id">
+          <td><a :href="'#/runs/' + r.id">#{{ r.id }}</a></td>
+          <td>{{ CRAWLERS[r.params?.crawler]?.label }}</td>
+          <td><span class="pill" :class="RUN_STATUS_CLASS[r.status]">{{ r.status }}</span></td>
+          <td class="muted">{{ r.message }}</td>
+          <td class="muted">{{ formatTime(r.started_at || r.created_at) }}</td>
+        </tr>
+      </tbody></table>
+    </div>
+  `,
+};
+
 export default {
-  components: { SiteList, PreflightReport, SiteForm },
+  components: { SiteList, PreflightReport, SiteForm, CrawlPanel },
   props: { system: Object, param: String },
   setup(props) {
     const sites = ref([]);
@@ -385,6 +449,7 @@ export default {
 
       <div class="tabs" role="tablist" v-if="site.id">
         <button role="tab" :class="{ active: tab === 'preflight' }" @click="tab = 'preflight'">Pre-flight check</button>
+        <button role="tab" :class="{ active: tab === 'crawl' }" @click="tab = 'crawl'">Crawl</button>
         <button role="tab" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">Settings</button>
       </div>
 
@@ -415,6 +480,8 @@ export default {
 
         <PreflightReport v-if="site.preflight_result" :result="site.preflight_result" />
       </template>
+
+      <CrawlPanel v-else-if="site.id && tab === 'crawl'" :site="site" :key="site.id" />
 
       <template v-else>
         <p v-if="notice" class="notice">{{ notice }}</p>

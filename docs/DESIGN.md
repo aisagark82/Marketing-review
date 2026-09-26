@@ -28,6 +28,8 @@
 | D19 | **Phase 0 includes a working UI** (a thin slice, §12.1), not only CSV output | v0.6 |
 | D20 | Wrong source text hidden by CSS styling (typed "pfizer", shown as "Pfizer") is a **normal violation** at full severity | v0.6 |
 | D21 | Pre-flight check (built in step 2): stricter than RFC 9309 in two places. A robots.txt answering 401/403 counts as "disallow everything", and once a site shows bot protection no further requests are made. Changing a site's start URLs, domains, sitemap or robots setting withdraws the acknowledgement | step 2 |
+| D22 | Crawling (built in step 3). Both libraries needed changes to meet §8.1. **Crawlee** spoofs browser fingerprints and adds a made-up User-Agent and `sec-ch-ua` headers by default (both switched off), and keeps unvisited URLs from a stopped crawl in a process-wide queue (each crawl now gets its own). **Crawl4AI** always starts Chromium with `--disable-blink-features=AutomationControlled` (hides automation) and `--ignore-certificate-errors`, and sets its own User-Agent. BrandGuard launches Chromium itself with plain flags and connects Crawl4AI over CDP. Scope, robots.txt, pacing, retries (none) and block handling are BrandGuard's own and identical for both | step 3 |
+| D23 | Text from attributes (`alt`, `title`, `aria-label`, `placeholder`) is classed as **metadata**, since it isn't displayed as page text. Off-site redirects and iframes are stopped in the browser (via CDP), so no third-party page is loaded | step 3 |
 
 > **Note on D12:** in v0.3 you agreed to drop Redis in favour of a Postgres queue.
 > Without Docker, PostgreSQL would be a separate install and service on the laptop, so the same goal

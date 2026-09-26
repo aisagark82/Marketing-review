@@ -24,7 +24,9 @@ def _configure_logging() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     # Alembic logs every plugin and step at INFO; core/migrate.py reports upgrades itself.
-    logging.getLogger("alembic").setLevel(logging.WARNING)
+    # httpx logs every request, and the crawler libraries log their own progress.
+    for noisy in ("alembic", "httpx", "crawlee", "crawl4ai"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def _initialize() -> None:
@@ -46,8 +48,17 @@ def _queue_threads() -> int:
     return PROFILES[profile]["queue_threads"]
 
 
-def cmd_setup(_args: argparse.Namespace) -> int:
+def _install_chromium() -> bool:
+    print("Downloading Chromium for crawling (one time, ~150 MB)...")
+    result = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"])
+    return result.returncode == 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
     _initialize()
+    if not args.skip_browser and not _install_chromium():
+        print("Chromium could not be installed. Crawling needs it; run `brandguard setup` again.")
+        return 1
     paths = get_paths()
     print(f"BrandGuard {__version__} is set up.")
     print(f"  Home folder : {paths.home}")
@@ -124,9 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="brandguard", description="Brand compliance review")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("setup", help="Create the home folder, database and job queue").set_defaults(
-        func=cmd_setup
+    setup = sub.add_parser("setup", help="Create the home folder, database and job queue")
+    setup.add_argument(
+        "--skip-browser", action="store_true", help="Don't download Chromium (already installed)"
     )
+    setup.set_defaults(func=cmd_setup)
 
     start = sub.add_parser("start", help="Start the web app and the worker")
     start.add_argument("--host", default=DEFAULT_HOST)

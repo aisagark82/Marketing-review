@@ -15,6 +15,10 @@ dependencies = [
     "truststore>=0.9",
     "protego>=0.3",
     "defusedxml>=0.7",
+    "playwright>=1.49",
+    "crawlee[playwright]>=1.0",
+    "crawl4ai>=0.7",
+    "psutil>=6.0",
 ]
 
 [project.optional-dependencies]

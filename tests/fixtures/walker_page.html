@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title>Example Pharma | Science</title>
+  <meta name="description" content="Pfizer-style description with Phizer typo">
+  <meta property="og:title" content="Example Pharma on OpenGraph">
+  <meta name="viewport" content="width=device-width">
+  <meta property="og:image" content="https://www.example-pharma.test/og.png">
+  <script type="application/ld+json">
+    {"@context": "https://schema.org", "@type": "Organization", "name": "Example Pharma Inc.",
+     "founder": {"@type": "Person", "name": "Jane Doe"}, "url": "https://www.example-pharma.test/"}
+  </script>
+  <style>
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .offscreen { position: absolute; left: -9999px; }
+    .shout { text-transform: uppercase; }
+    .badge::before { content: "New from Example Pharma"; }
+    .panel[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <h1 class="shout">pfizer science</h1>
+  <p id="intro">Welcome to <b>Example</b> Pharma, where <a href="/about">science</a> matters.</p>
+  <p id="lines">First line<br>Second line</p>
+  <div style="display:none" id="gone">Hidden promo text</div>
+  <span class="sr-only">Screen reader only text</span>
+  <div class="offscreen">Off screen text</div>
+  <details><summary>More</summary><p id="detail">Detail revealed text</p></details>
+  <button aria-expanded="false" aria-controls="p1"
+          onclick="this.setAttribute('aria-expanded','true');document.getElementById('p1').hidden=false">FAQ</button>
+  <div id="p1" class="panel" hidden><p>Accordion answer text</p></div>
+  <noscript><p>Please enable JavaScript for Example Pharma</p></noscript>
+  <form><input type="hidden" name="campaign" value="hidden campaign value">
+    <input type="text" placeholder="Search Example Pharma">
+    <input type="submit" value="Go"></form>
+  <img src="/img/logo.png" alt="Example Pharma logo" title="Logo title">
+  <nav aria-label="Main navigation"><a href="/news">News</a></nav>
+  <span class="badge"></span>
+  <svg width="200" height="40"><text x="0" y="20">SVG Example Pharma</text></svg>
+  <div id="host"></div>
+  <script>
+    const root = document.getElementById('host').attachShadow({mode: 'open'});
+    root.innerHTML = '<p>Shadow DOM text</p>';
+  </script>
+  <a href="/files/annual-report.pdf">Annual report</a>
+  <a href="https://cdn.example-pharma.test/brochure.pdf">Brochure</a>
+  <a href="https://social.example.net/pharma">Social</a>
+  <a href="mailto:info@example-pharma.test">Email</a>
+  <video><source src="/media/intro.mp4" type="video/mp4"><track src="/media/intro.vtt" kind="captions"></video>
+  <iframe src="https://video.example.net/embed/123" width="10" height="10"></iframe>
+  <div style="background-image:url('/img/banner.jpg');width:10px;height:10px"></div>
+</body>
+</html>

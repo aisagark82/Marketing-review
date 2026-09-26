@@ -24,6 +24,8 @@ class RunOut(BaseModel):
     message: str | None
     error: str | None
     cancel_requested: bool
+    params: dict | None
+    stats: dict | None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
@@ -139,3 +141,47 @@ class BrandOut(BaseModel):
 
 class Acknowledgement(BaseModel):
     reviewed_robots_and_terms: Literal[True]
+
+
+class CrawlStart(BaseModel):
+    crawler: Literal["crawlee", "crawl4ai"]
+
+
+class AssetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    run_id: int
+    url: str
+    final_url: str | None
+    kind: str
+    status: str
+    status_reason: str | None
+    found_on_id: int | None
+    http_status: int | None
+    title: str | None
+    language: str | None
+    screenshot_path: str | None
+    info: dict | None
+    fetched_at: datetime | None
+
+
+class AssetPage(BaseModel):
+    total: int
+    items: list[AssetOut]
+
+
+class SegmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    text: str
+    text_source: str
+    visibility: str
+    render_transform: str | None
+    locator: dict | None
+
+
+class AssetDetail(AssetOut):
+    segments: list[SegmentOut]
+    files: list[AssetOut]  # files and links found on this page
