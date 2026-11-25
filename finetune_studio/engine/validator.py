@@ -149,6 +149,73 @@ def validate(cfg):
     if _n(cfg, "serve_max_len", 8192) > a["ctx"] and cfg.get("rope_scaling", "none") == "none":
         add("warn", "deploy", "serve_max_len", "Serving length exceeds the model's native context.")
 
+    # ── fine-tuning-specific testing
+    pre = set(cfg.get("preflight_checks") or [])
+    lora_like = m in ("lora", "qlora", "dora", "adalora")
+    if not pre:
+        add("warn", "ft_testing", "preflight_checks", "No pre-training sanity checks: template and loss-mask bugs typically surface only after the run.")
+    if "identity_init" in pre and not (lora_like or m in ("vera", "ia3")):
+        add("info", "ft_testing", "preflight_checks", "Zero-init identity only applies to adapter methods; it will be skipped.")
+    if "identity_init" in pre and cfg.get("lora_init") in ("pissa", "olora", "loftq"):
+        add("info", "ft_testing", "preflight_checks", f"{cfg.get('lora_init')} re-factorises base weights, so the identity check is skipped.")
+    if obj in ONLINE and pre & {"overfit_batch", "initial_loss", "lr_range", "loss_mask"}:
+        add("info", "ft_testing", "preflight_checks", "Loss-based sanity checks are skipped for online RL (losses need rollouts).")
+    mons = set(cfg.get("monitors_train") or [])
+    if obj in ("dpo", "kto", "simpo", "orpo", "cpo") and not mons & {"dpo_displacement", "dpo_reward_acc"}:
+        add("warn", "ft_testing", "monitors_train", "Preference training without DPO monitors: likelihood displacement goes unnoticed until evaluation.")
+    if obj in ONLINE and not mons & {"rl_reward_hacking", "rl_entropy"}:
+        add("warn", "ft_testing", "monitors_train", "Online RL without reward-hacking / entropy monitors.")
+    if mons & {"dpo_displacement", "dpo_reward_acc"} and obj not in ("dpo", "kto", "simpo", "orpo", "cpo"):
+        add("info", "ft_testing", "monitors_train", "DPO monitors are inactive for this objective.")
+    if mons & {"rl_reward_hacking", "rl_entropy", "rl_kl", "rl_zero_std"} and obj not in ONLINE:
+        add("info", "ft_testing", "monitors_train", "RL monitors are inactive for this objective.")
+    if "sample_gens" in mons and cfg.get("dist_strategy") in ("fsdp", "zero3", "zero3_offload"):
+        add("info", "ft_testing", "monitors_train", "Sample generations are skipped with sharded parameters (FSDP / ZeRO-3).")
+    if "gen_gap" in mons and cfg.get("eval_strategy") == "no":
+        add("warn", "ft_testing", "monitors_train", "The overfitting monitor needs evaluation during training.")
+    ck = cfg.get("ckpt_selection", "final")
+    evals = max(1, int(estimate(cfg)["steps"] / max(_n(cfg, "save_steps", 200), 1)))
+    if ck in ("best_task_metric", "soup") and int(_n(cfg, "save_total_limit", 3)) < min(evals, 5):
+        add("warn", "ft_testing", "ckpt_selection", f"Only {int(_n(cfg, 'save_total_limit', 3))} checkpoints are kept: raise save_total_limit to select among more.")
+    if ck == "soup" and int(_n(cfg, "soup_k", 3)) > int(_n(cfg, "save_total_limit", 3)):
+        add("error", "ft_testing", "soup_k", "soup_k exceeds the number of checkpoints kept (save_total_limit).")
+    if ck == "best_val_loss" and obj in ("dpo", "grpo", "rloo", "simpo", "kto"):
+        add("warn", "ft_testing", "ckpt_selection", "Validation loss is a poor proxy for preference / RL objectives; select on a task metric.")
+    if (cfg.get("hpo") or cfg.get("learning_curve") or cfg.get("data_ablation")) and cfg.get("eval_strategy") == "no":
+        add("error", "ft_testing", "hpo", "Search / learning curves score trials on eval_loss: enable evaluation.")
+    if cfg.get("data_ablation") and not str(cfg.get("data_mixing") or "").strip():
+        add("warn", "ft_testing", "data_ablation", "Source ablation needs a dataset mixture (Data → Dataset mixture).")
+    if cfg.get("learning_curve") and _n(cfg, "num_examples", 0) < 1000:
+        add("info", "ft_testing", "learning_curve", "Under 1k examples the small fractions are too noisy to fit a curve.")
+    if cfg.get("hpo") and "lora_r" in (cfg.get("hpo_space") or []) and not lora_like:
+        add("info", "ft_testing", "hpo_space", "LoRA rank is not searchable for this method.")
+    diag = set(cfg.get("ft_diagnostics") or [])
+    if "merge_equivalence" in diag and (not lora_like or not cfg.get("merge_adapters")):
+        add("info", "ft_testing", "ft_diagnostics", "Merge equivalence only applies to merged adapters.")
+    if m == "qlora" and cfg.get("merge_adapters") and "qlora_bf16_merge" not in (cfg.get("technique_tests") or []):
+        add("warn", "ft_testing", "technique_tests", "QLoRA adapters are trained on a 4-bit base but merged onto bf16: test the merge (qlora_bf16_merge).")
+    if obj not in ("classifier", "cpt", "reward_model") and "safety_erosion" not in diag and cfg.get("deploy_target") != "cpu_edge":
+        add("info", "ft_testing", "ft_diagnostics", "Fine-tuning, even on benign data, can erode safety behaviour; add the safety-erosion check.")
+    if (cfg.get("task_type") == "domain" or obj == "cpt") and not diag & {"knowledge_probes", "unknown_facts"}:
+        add("info", "ft_testing", "ft_diagnostics", "Knowledge-injection runs: probe recall with paraphrased and reversed questions.")
+    objt = set(cfg.get("objective_tests") or [])
+    fit = {"sft_heldout_ppl": {"sft", "distill"}, "pref_accuracy": {"dpo", "simpo", "orpo", "cpo"}, "lc_winrate": {"dpo", "simpo", "orpo", "kto", "cpo"},
+           "rm_accuracy": {"reward_model"}, "rl_passk": ONLINE, "rl_hack_probes": ONLINE, "distill_agreement": {"distill"},
+           "cpt_ppl": {"cpt"}, "cls_report": {"classifier"}}
+    off = sorted(t for t in objt if obj not in fit.get(t, {obj}))
+    if off:
+        add("warn", "ft_testing", "objective_tests", f"{', '.join(off)} do not apply to {obj}.")
+    if not objt & {t for t, objs in fit.items() if obj in objs}:
+        add("info", "ft_testing", "objective_tests", f"No objective-specific test for {obj}.")
+    if "lc_winrate" in objt and not cfg.get("judge_enabled"):
+        add("warn", "ft_testing", "lc_winrate", "Length-controlled win rate needs the LLM judge (Evaluation step).")
+    tfit = {"rank_ablation": {"lora", "dora", "qlora"}, "adapter_norms": {"lora", "dora", "qlora", "adalora"}, "qlora_bf16_merge": {"qlora"},
+            "frozen_checksum": {"freeze", "bitfit", "lora", "qlora", "dora", "adalora", "vera", "ia3", "prefix", "prompt_tuning"},
+            "weight_drift": {"full", "galore", "freeze"}, "prompt_seed_sensitivity": {"prompt_tuning", "prefix"}, "adapter_isolation": {"lora", "dora", "qlora"}}
+    toff = sorted(t for t in (cfg.get("technique_tests") or []) if m not in tfit.get(t, {m}))
+    if toff:
+        add("warn", "ft_testing", "technique_tests", f"{', '.join(toff)} do not apply to {m}.")
+
     # ── testing methodology
     ts = test_summary(cfg)
     sets = set(cfg.get("test_sets") or [])

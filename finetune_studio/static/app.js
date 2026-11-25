@@ -77,7 +77,8 @@ const S = {
   cfg: {}, mode: store.get('fts-mode', 'essential'), stage: store.get('fts-stage', 'objective'),
   analysis: null, issuesByKey: {}, files: null, fileTab: 'train.py',
 };
-const PHASES = [['Plan', ['objective', 'data', 'model']], ['Build', ['technique', 'alignment', 'training', 'compute', 'tracking']], ['Ship', ['evaluation', 'export', 'deploy']]];
+const PHASES = [['Plan', ['objective', 'data', 'model']], ['Build', ['technique', 'alignment', 'training', 'compute', 'tracking']],
+  ['Validate', ['ft_testing', 'evaluation']], ['Ship', ['export', 'deploy']]];
 const CARD_KEYS = new Set(['method', 'objective', 'data_kind', 'task_type']);
 
 function matches(show, cfg) {
@@ -433,7 +434,8 @@ function testPlanHtml(t) {
         <div class="stat" data-tip="Smallest absolute change in the primary metric detectable at α=${t.alpha}, 80% power, baseline ${t.baseline_p.toFixed(2)}">
           <div class="k">Detectable change</div><div class="v" style="color:${t.adequate ? 'var(--ok)' : 'var(--warn)'}">± ${pts(t.detectable)}</div><div class="s">${t.adequate ? 'adequately powered' : 'under-powered'}</div></div>
       </div>
-      <ul class="coverage">${t.coverage.map((c) => `<li><button class="${c.on ? 'on' : ''}" data-jump="${esc(c.key)}" title="${c.on ? 'Enabled' : 'Not planned'} — click to configure">${icon(c.on ? 'check' : 'circle')}<span>${esc(c.label)}</span></button></li>`).join('')}</ul>
+      ${['Fine-tuning tests', 'Evaluation'].map((g) => { const items = t.coverage.filter((c) => c.group === g);
+        return `<div class="cov-group">${g} <span>${items.filter((c) => c.on).length}/${items.length}</span></div><ul class="coverage">${items.map((c) => `<li><button class="${c.on ? 'on' : ''}" data-jump="${esc(c.key)}" title="${c.on ? 'Enabled' : 'Not planned'} — click to configure">${icon(c.on ? 'check' : 'circle')}<span>${esc(c.label)}</span></button></li>`).join('')}</ul>`; }).join('')}
     </div>`;
 }
 
@@ -563,7 +565,10 @@ async function renderGenerate() {
     'export.sh': 'Merge, quantize, convert', 'serve.sh': 'Serving + rollout', 'requirements.txt': 'Dependencies',
     'eval_suite.py': 'All test layers, paired significance tests, release gates (exit 1 on failure)', 'TEST_PLAN.md': 'Testing methodology & acceptance criteria',
     'gates.json': 'Release-gate thresholds', 'loadtest.sh': 'Latency / throughput load test', 'redteam.sh': 'Safety suites & automated red teaming',
-    'tests/golden.example.jsonl': 'Example behavioural tests (MFT / INV / DIR)', 'tests/safety.example.jsonl': 'Example safety & prompt-injection cases' };
+    'tests/golden.example.jsonl': 'Example behavioural tests (MFT / INV / DIR)',
+    'ft_checks.py': 'Pre-training sanity checks on the real pipeline (exit 1 on failure)', 'ft_monitor.py': 'In-training failure-mode monitors (callback)',
+    'ft_diagnostics.py': 'Checkpoint selection + post-training, objective- and technique-specific tests', 'sweep.py': 'HPO, learning curve, ablations, seeds, noisy-label audit',
+    'tests/knowledge_probes.example.jsonl': 'Example injected-knowledge probes', 'soup.mergekit.yaml': 'Checkpoint weight-soup recipe', 'tests/safety.example.jsonl': 'Example safety & prompt-injection cases' };
   const draw = () => {
     $('.tabs', main).innerHTML = Object.keys(S.files).map((f) => `<button class="tab ${f === S.fileTab ? 'on' : ''}" role="tab" aria-selected="${f === S.fileTab}" data-file="${esc(f)}">${esc(f)}</button>`).join('');
     const content = S.files[S.fileTab];

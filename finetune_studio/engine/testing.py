@@ -10,6 +10,16 @@ from .catalog import model_arch
 
 Z = NormalDist()
 
+FT_LAYERS = [  # fine-tuning-specific: before / during / after the training run
+    ("sanity", "Pre-training sanity checks", "preflight_checks", lambda c: len(c.get("preflight_checks") or []) >= 4),
+    ("monitors", "In-training monitors", "monitors_train", lambda c: bool(c.get("monitors_train"))),
+    ("ckpt", "Checkpoint selection on task metric", "ckpt_selection", lambda c: c.get("ckpt_selection") in ("best_task_metric", "soup")),
+    ("search", "HPO / learning curve / ablation", "hpo", lambda c: bool(c.get("hpo") or c.get("learning_curve") or c.get("data_ablation"))),
+    ("diagnostics", "Fine-tuning side-effect diagnostics", "ft_diagnostics", lambda c: len(c.get("ft_diagnostics") or []) >= 3),
+    ("objective_tests", "Objective-specific tests", "objective_tests", lambda c: bool(c.get("objective_tests"))),
+    ("technique_tests", "Technique-specific tests", "technique_tests", lambda c: bool(c.get("technique_tests"))),
+]
+
 LAYERS = [  # id, label, setting to jump to, predicate
     ("held_out", "Held-out test split", "test_sets", lambda c: "in_dist" in (c.get("test_sets") or [])),
     ("ood", "Out-of-distribution / temporal / production", "test_sets",
@@ -70,7 +80,8 @@ def summary(cfg):
     p = base if base is not None and 0 < base < 1 else 0.7
     alpha, mde = _f(cfg, "sig_alpha", 0.05), _f(cfg, "mde", 0.03)
     need = required_n(mde, p, alpha)
-    cov = [dict(id=i, label=lab, key=k, on=bool(fn(cfg))) for i, lab, k, fn in LAYERS]
+    cov = ([dict(id=i, label=lab, key=k, on=bool(fn(cfg)), group="Fine-tuning tests") for i, lab, k, fn in FT_LAYERS]
+           + [dict(id=i, label=lab, key=k, on=bool(fn(cfg)), group="Evaluation") for i, lab, k, fn in LAYERS])
     return dict(
         n_test=n_test, baseline_p=p, alpha=alpha, mde=mde, required_n=need, detectable=detectable_effect(n_test, p, alpha),
         adequate=n_test >= need, winrate_n=winrate_n(mde, alpha), human_n=int(_f(cfg, "human_n", 0)) if cfg.get("human_eval") else 0,
@@ -260,7 +271,7 @@ def gen_test_plan(cfg):
         "online": f"{cfg.get('rollout')} on `{cfg.get('online_metric')}` with guardrails {cfg.get('online_guardrails')}"
                   + (", sequential testing" if cfg.get("sequential_testing") else "") + f", ≥ {cfg.get('online_min_days')} days",
     }
-    for c in s["coverage"]:
+    for c in [c for c in s["coverage"] if c["group"] == "Evaluation"]:
         lines.append(f"| {c['label']} | {on(c['on'])} | {method[c['id']] if c['on'] else 'not planned'} |")
     lines += ["", "## 5. Release gates", "", "| Gate | Threshold |", "|---|---|"]
     gates = [("Primary metric ≥ target", cfg.get("target_value") if cfg.get("gate_primary") else None),

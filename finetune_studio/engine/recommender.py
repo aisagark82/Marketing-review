@@ -333,6 +333,78 @@ def hyperparams(cfg, method, obj):
 
     dep = cfg.get("deploy_target", "cloud_gpu")
     a = model_arch(cfg)
+
+    # ── fine-tuning-specific testing
+    prio = cfg.get("priority")
+    lora_like = method in ("lora", "qlora", "dora", "adalora")
+    online = obj in ("grpo", "rloo", "ppo")
+    pre = ["template_render", "truncation", "trainable_audit", "throughput"]
+    if obj not in ("dpo", "orpo", "simpo", "kto", "cpo", "reward_model") and not online:
+        pre.insert(1, "loss_mask")
+    if lora_like and cfg.get("lora_init", "default") in ("default", "gaussian"):
+        pre.append("identity_init")
+    if not online:
+        pre += ["initial_loss", "overfit_batch"]
+        if N < 50000 or prio == "quality":
+            pre.append("lr_range")
+    put("preflight_checks", pre, "Catches template, masking, adapter and gradient bugs in minutes"
+        + ("; DPO's step-0 loss must equal ln 2" if obj == "dpo" else "") + ("; loss checks skipped for online RL" if online else ""))
+    put("preflight_block", True, "Never launch the full run on a broken pipeline")
+    mon = ["nan_guard", "loss_spike", "grad_spike", "lr_check"]
+    if not online:
+        mon.append("gen_gap")
+    if obj in ("dpo", "kto", "simpo", "orpo", "cpo"):
+        mon += ["dpo_displacement", "dpo_reward_acc"]
+    if online:
+        mon += ["rl_reward_hacking", "rl_entropy", "rl_zero_std"] + (["rl_kl"] if _n(cfg, "kl_coef", 0) > 0 else [])
+    if obj != "classifier" and resolve_strategy(dict(cfg, **patch)) not in ("fsdp", "zero3", "zero3_offload"):
+        mon.append("sample_gens")
+    put("monitors_train", mon, {"dpo": "DPO failure modes: likelihood displacement and over-optimisation", "grpo": "RL failure modes: reward hacking, entropy collapse, dead groups"}.get(obj, "Generic divergence / overfitting monitors"))
+    ck = "best_task_metric" if (obj in ("dpo", "kto", "simpo", "orpo", "grpo", "rloo", "sft") and obj != "classifier") else "best_val_loss"
+    if method in ("full", "galore") and N > 100000:
+        ck = "soup"
+    put("ckpt_selection", ck, {"best_task_metric": "Loss and task quality diverge for generative / preference objectives",
+                               "soup": "Averaging late full-FT checkpoints is a cheap, robust gain",
+                               "best_val_loss": "Validation loss tracks quality for this objective"}[ck])
+    if ck in ("best_task_metric", "soup"):
+        put("save_total_limit", max(int(_n(cfg, "save_total_limit", 3)), 6), "Keep enough checkpoints to select from")
+    diag = ["generalization_gap", "stop_behavior", "length_drift"]
+    if obj not in ("classifier", "cpt", "reward_model") and task not in ("classification", "embedding"):
+        diag.append("safety_erosion")
+    if obj in ("dpo", "simpo", "orpo", "kto", "grpo", "rloo") or method == "full":
+        diag.append("diversity")
+    if task in ("reasoning", "extraction", "classification") or obj in ("dpo", "grpo"):
+        diag.append("calibration_drift")
+    if lora_like and patch.get("merge_adapters", True):
+        diag.append("merge_equivalence")
+    if task in ("instruction", "rag", "tool_use"):
+        diag.append("template_robustness")
+    if obj in ("dpo", "simpo", "kto") or task == "instruction":
+        diag.append("sycophancy")
+    if task == "domain" or obj == "cpt":
+        diag += ["knowledge_probes", "unknown_facts"]
+    put("ft_diagnostics", diag, "Side effects fine-tuning is known to cause for this objective, task and method")
+    objt = {"sft": ["sft_heldout_ppl"], "distill": ["sft_heldout_ppl", "distill_agreement"], "cpt": ["cpt_ppl"],
+            "dpo": ["pref_accuracy", "lc_winrate"], "simpo": ["pref_accuracy", "lc_winrate"], "orpo": ["pref_accuracy", "lc_winrate"],
+            "kto": ["lc_winrate"], "cpo": ["pref_accuracy"], "reward_model": ["rm_accuracy"], "grpo": ["rl_passk", "rl_hack_probes"],
+            "rloo": ["rl_passk", "rl_hack_probes"], "ppo": ["rl_passk", "rl_hack_probes"], "classifier": ["cls_report"]}.get(obj, [])
+    put("objective_tests", objt, f"What success means for {OBJECTIVES.get(obj, obj)}")
+    tech = {"lora": ["adapter_norms"] + (["rank_ablation"] if N >= 5000 else []), "dora": ["adapter_norms"],
+            "qlora": ["adapter_norms", "qlora_bf16_merge"], "adalora": ["adapter_norms"],
+            "full": ["weight_drift"], "galore": ["weight_drift"], "freeze": ["frozen_checksum"], "bitfit": ["frozen_checksum"],
+            "prompt_tuning": ["prompt_seed_sensitivity"], "prefix": ["prompt_seed_sensitivity"]}.get(method, [])
+    if dep == "multi_tenant" and lora_like:
+        tech.append("adapter_isolation")
+    put("technique_tests", tech, f"Checks tied to how {METHOD_INFO.get(method, (method,))[0]} changes the weights")
+    put("learning_curve", N < 50000, "Small data: a learning curve shows whether more data is the next lever" if N < 50000 else "Large data: skip")
+    put("hpo", prio == "quality", "Quality priority: a short successive-halving search over LR and rank" if prio == "quality" else "Defaults are strong; search later if gates fail")
+    if prio == "quality":
+        put("hpo_method", "asha", "Successive halving spends most compute on promising configs")
+        put("hpo_space", ["learning_rate", "lora_r"] if lora_like else (["learning_rate", "beta"] if obj in ("dpo", "kto", "simpo", "orpo") else ["learning_rate", "epochs"]),
+            "The settings with the largest effect for this method")
+    put("label_noise_audit", task in ("classification", "extraction") or obj == "reward_model", "Human labels: review the highest-loss examples"
+        if task in ("classification", "extraction") or obj == "reward_model" else "Not a labelling task")
+
     # ── testing methodology
     priv, prio = cfg.get("data_privacy"), cfg.get("priority")
     sets = ["in_dist", "golden", "ood"]
@@ -370,7 +442,9 @@ def hyperparams(cfg, method, obj):
     human = judge and (prio == "quality" or task in ("summarization", "safety", "instruction"))
     put("human_eval", human, "Generative quality is ultimately a human judgement" if human else "Automatic metrics are reliable for this task")
     if human:
-        put("human_n", max(200, min(1000, winrate_n(mde))), f"≈{winrate_n(mde)} pairwise items detect a {mde:.2f} win-rate edge")
+        need_h = winrate_n(mde)
+        put("human_n", max(200, min(1000, need_h)), f"≈{need_h:,} pairwise items detect a {mde:.2f} win-rate edge"
+            + (" — capped at 1,000 for annotation cost; the judge (calibrated on these labels) covers the rest" if need_h > 1000 else ""))
         put("annotators_per_item", 3, "Three raters allow majority vote and agreement (Fleiss' κ)")
     suites = []
     if task in ("safety", "instruction", "rag", "tool_use") or dep in ("cloud_gpu", "multi_tenant"):

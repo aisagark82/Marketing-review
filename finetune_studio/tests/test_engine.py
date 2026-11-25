@@ -230,5 +230,94 @@ class TestingMethodologyTests(unittest.TestCase):
         self.assertIn("python eval_suite.py", files["eval.sh"])
 
 
+class FineTuneTestingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        files = generate(cfg(project_name="t"))
+        cls.mon, cls.diag, cls.sweep = {}, {}, {}
+        exec(compile(generate(cfg(monitors_train=["nan_guard"]))["ft_monitor.py"], "ft_monitor.py", "exec"), cls.mon)
+        exec(compile(files["ft_diagnostics.py"], "ft_diagnostics.py", "exec"), cls.diag)
+        exec(compile(files["sweep.py"], "sweep.py", "exec"), cls.sweep)
+        for f in ("ft_checks.py", "ft_diagnostics.py", "sweep.py"):
+            ast.parse(files[f])
+
+    def _monitor(self, on, tmp):
+        return self.mon["FTMonitor"]({"monitors_train": on, "monitor_action": "stop"}, tmp)
+
+    def test_monitor_alerts(self):
+        import tempfile
+        from types import SimpleNamespace as NS
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._monitor(["nan_guard", "loss_spike", "dpo_displacement", "rl_entropy", "rl_reward_hacking", "gen_gap"], tmp)
+            ctl = NS(should_training_stop=False, should_save=False)
+            st = lambda step: NS(global_step=step, max_steps=1000)  # noqa: E731
+            for i in range(1, 40):
+                m.on_log(None, st(i), ctl, {"loss": 1.0, "logps/chosen": -20.0, "entropy": 1.0, "reward": 0.1, "completions/mean_length": 100})
+            m.on_log(None, st(41), ctl, {"loss": 9.0})                                  # spike
+            m.on_log(None, st(42), ctl, {"logps/chosen": -40.0})                        # likelihood displacement
+            m.on_log(None, st(43), ctl, {"reward": 0.9, "completions/mean_length": 400})  # reward hacking
+            for e in (1.0, 1.01, 1.02):
+                m.on_log(None, st(44), ctl, {"eval_loss": e})                          # overfitting
+            kinds = {a["kind"] for a in m.alerts}
+            self.assertTrue({"loss_spike", "likelihood_displacement", "reward_hacking_suspect", "overfitting"} <= kinds, kinds)
+            self.assertFalse(ctl.should_training_stop)
+            m.on_log(None, st(45), ctl, {"entropy": 0.01})                              # entropy collapse is critical
+            self.assertTrue(ctl.should_training_stop)
+            m.on_log(None, st(46), ctl, {"loss": float("nan")})
+            self.assertIn("nan", {a["kind"] for a in m.alerts})
+
+    def test_diagnostic_metrics(self):
+        D = self.diag
+        self.assertEqual(D["distinct_n"](["a b c", "a b c"], 1), 0.5)
+        self.assertGreater(D["self_bleu"](["the cat sat on the mat"] * 3), 0.99)
+        self.assertLess(D["self_bleu"](["alpha beta gamma delta", "one two three four", "red green blue black"]), 0.01)
+        self.assertAlmostEqual(D["ece"]([1.0, 1.0], [1.0, 1.0]), 0.0)
+        self.assertAlmostEqual(D["ece"]([0.9] * 10, [0.0] * 10), 0.9)
+        self.assertAlmostEqual(D["pass_at_k"](10, 1, 1), 0.1)
+        self.assertEqual(D["pass_at_k"](10, 10, 5), 1.0)
+        self.assertAlmostEqual(D["pass_at_k"](4, 2, 2), 1 - 1 / 6)
+        lc, n = D["length_matched_winrate"]([(1.0, 100, 50), (0.0, 50, 52), (1.0, 60, 58)])
+        self.assertEqual((lc, n), (0.5, 2))
+
+    def test_sweep_math(self):
+        W = self.sweep
+        ns = [100, 200, 400, 800]
+        losses = [3 * n ** -0.4 + 0.5 for n in ns]
+        a, b, c = W["fit_power_law"](ns, losses)
+        self.assertAlmostEqual(b, 0.4, delta=0.05)
+        self.assertAlmostEqual(c, 0.5, delta=0.05)
+        sched = W["halving_schedule"](16, 300)
+        self.assertEqual(sched[0][0], 16)
+        self.assertEqual(sched[-1], (1, 300))
+        self.assertTrue(all(x[1] <= y[1] for x, y in zip(sched, sched[1:])))
+
+    def test_recommended_ft_tests_follow_objective_and_method(self):
+        dpo = recommend(cfg(data_kind="preference"))["patch"]
+        self.assertIn("dpo_displacement", dpo["monitors_train"])
+        self.assertIn("pref_accuracy", dpo["objective_tests"])
+        grpo = recommend(cfg(data_kind="verifiable"))["patch"]
+        self.assertIn("rl_reward_hacking", grpo["monitors_train"])
+        self.assertIn("rl_passk", grpo["objective_tests"])
+        self.assertNotIn("overfit_batch", grpo["preflight_checks"])
+        q = recommend(cfg(gpu_type="T4"))["patch"]
+        self.assertIn("qlora_bf16_merge", q["technique_tests"])
+        cls = recommend(cfg(data_kind="labels"))["patch"]
+        self.assertIn("cls_report", cls["objective_tests"])
+
+    def test_ft_validator(self):
+        keys = {i["key"] for i in validate(cfg(objective="dpo", record_schema="preference", monitors_train=["nan_guard"], objective_tests=["rl_passk"]))
+                if i["level"] == "warn"}
+        self.assertIn("monitors_train", keys)
+        self.assertIn("objective_tests", keys)
+        errs = {i["key"] for i in validate(cfg(ckpt_selection="soup", soup_k=5, save_total_limit=2)) if i["level"] == "error"}
+        self.assertIn("soup_k", errs)
+
+    def test_train_py_supports_sweeps_and_import(self):
+        t = generate(cfg(monitors_train=["nan_guard"]))["train.py"]
+        for needle in ("FT_OVERRIDES", "FT_DATA_FRACTION", "FT_OUTPUT_DIR", "if __name__ == '__main__':", "FTMonitor", "compat(SFTConfig"):
+            self.assertIn(needle, t)
+        self.assertIn("mixed_precision: 'no'", generate(cfg(precision="fp32"))["accelerate_config.yaml"])
+
+
 if __name__ == "__main__":
     unittest.main()

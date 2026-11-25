@@ -7,7 +7,9 @@ standard library**.
 ```bash
 cd finetune_studio
 python3 server.py          # opens http://127.0.0.1:8765
-python3 -m unittest discover tests
+python3 -m unittest discover tests          # unit tests (stdlib only)
+# optional, real TRL run on a tiny model:  pip install torch transformers peft trl datasets accelerate
+python3 -m unittest tests.integration.test_real_trl -v
 ```
 
 ## What it does
@@ -22,9 +24,10 @@ python3 -m unittest discover tests
 | **6 Hyperparameters** | 9 LR schedules incl. WSD, 11 optimizers (AdamW fused/8-bit/paged/4-bit, Adafactor, Lion, schedule-free, Muon…), batching, precision incl. FP8, gradient checkpointing, eval/save cadence, early stopping, determinism |
 | **7 Compute** | 12 GPU types, nodes, DDP / FSDP1/2 / ZeRO-1/2/3 / offload, sequence parallelism, launcher, SLURM / K8s / Ray / SageMaker / Vertex…, spot |
 | **8 Tracking** | W&B / MLflow / TensorBoard / Comet, run-name templates, hub push, data versioning, environment capture |
-| **9 Evaluation & testing** | see [Testing methodology](#testing-methodology) below |
-| **10 Optimize & export** | merge, AWQ / GPTQ / GGUF / FP8 / HQQ / bnb, ONNX / TensorRT-LLM / MLX / OpenVINO, pruning, model card |
-| **11 Deploy & monitor** | vLLM / SGLang / TGI / TRT-LLM / llama.cpp / Ollama, multi-LoRA, FP8 KV cache, speculative decoding (n-gram / draft / EAGLE-3), guardrails, shadow/canary/A-B rollout, drift/feedback monitors, retraining triggers |
+| **9 Fine-tune testing** | see [Fine-tuning-specific testing](#fine-tuning-specific-testing) below |
+| **10 Evaluation & testing** | see [Testing methodology](#testing-methodology) below |
+| **11 Optimize & export** | merge, AWQ / GPTQ / GGUF / FP8 / HQQ / bnb, ONNX / TensorRT-LLM / MLX / OpenVINO, pruning, model card |
+| **12 Deploy & monitor** | vLLM / SGLang / TGI / TRT-LLM / llama.cpp / Ollama, multi-LoRA, FP8 KV cache, speculative decoding (n-gram / draft / EAGLE-3), guardrails, shadow/canary/A-B rollout, drift/feedback monitors, retraining triggers |
 
 * **Advisor:** recommends the objective from the shape of your data, ranks 8 techniques with a 0–100 score and the
   reasons behind every point, filters by memory fit, sets 30+ hyperparameters with a reason for each, and suggests
@@ -41,6 +44,48 @@ python3 -m unittest discover tests
   download them as a zip.
 * **UX:** Essential/Expert modes (expert settings stay hidden unless changed), a ⌘K search across every setting, presets,
   modified-from-default markers with one-click reset, light/dark themes, autosave, and JSON import/export.
+
+## Fine-tuning-specific testing
+
+The **Fine-tune testing** step covers the tests that only exist because you are fine-tuning, organised around the training run.
+It adapts to the selected objective and technique.
+
+| When | Test | What it catches |
+|---|---|---|
+| **Before training** (`ft_checks.py`, imports the real `train.py` pipeline; `launch.sh` aborts on failure) | Chat-template render & round-trip | Missing `{% generation %}` markers, no end-of-turn token (model never stops), double BOS |
+| | Loss-mask audit | Prompt/system tokens trained, or nothing trained |
+| | Truncation audit | Examples silently cut at `max_seq_len` |
+| | Trainable-parameter audit | Adapter on the wrong modules, base weights accidentally trainable, count vs plan |
+| | Zero-init identity | Adapter model ≠ base at step 0 (bad init, pre-merged weights) |
+| | Initial-loss sanity | Loss ≈ ln(vocab) (wrong template/labels); **DPO: step-0 loss must equal ln 2** (reference wiring) |
+| | Overfit one batch | Gradients not flowing end to end |
+| | LR range test | LR above the divergence point; feeds the overfit check |
+| | Determinism, throughput & memory | Non-reproducible kernels; tokens/s and peak memory vs the app's estimate |
+| **During training** (`ft_monitor.py` callback; critical alerts save & stop) | NaN/inf, loss & grad-norm spikes, LR sanity | Divergence, fp16 overflow, broken schedulers |
+| | Train/val divergence | Memorisation (eval loss stalls while training continues) |
+| | Sample generations at each eval | Mode collapse and format drift you can see before the run ends |
+| | **DPO**: likelihood displacement, reward accuracy & margins | Chosen log-prob falling; preference not learned; over-optimisation |
+| | **RL**: reward hacking, entropy collapse, KL blow-up, zero-variance groups | Length/format exploitation; collapsed exploration; no learning signal |
+| **Model selection** (`ft_diagnostics.py --only checkpoints`) | Best checkpoint by validation **task metric**, or a weight soup of the last k | Loss-optimal ≠ quality-optimal checkpoints |
+| **Search & scaling** (`sweep.py`, validation split only) | HPO (TPE / random / grid / successive halving), learning curve with power-law fit, leave-one-source-out ablation, LoRA rank ablation, seed sensitivity, noisy-label audit | Whether more data, a different rank/LR, or cleaner labels is the next lever |
+| **After training** (`ft_diagnostics.py`) | Train vs held-out gap · **safety erosion vs base** · stop behaviour · length drift · mode collapse (distinct-n, self-BLEU) · calibration drift · unseen system prompts · merged == adapter · sycophancy · injected-knowledge probes (paraphrase, reversal) · hallucination on new facts | The documented side effects of fine-tuning |
+| **Objective-specific** | SFT held-out perplexity · preference implicit-reward accuracy & length-controlled win rate · reward-model pairwise accuracy & calibration · RL pass@k curve vs base & reward-hacking probes · distillation student–teacher agreement · CPT domain vs general perplexity · classifier confusion matrix, per-class P/R, threshold tuning | Whether *this* objective did its job |
+| **Technique-specific** | LoRA rank ablation & adapter update norms · QLoRA adapter-on-4-bit vs bf16-merge · frozen-weight checksum (partial / BitFit) · full-FT weight drift per layer · prompt-tuning seed sensitivity · multi-LoRA isolation & hot-swap | Whether the weights changed the way the method intends |
+
+`train.py` reads `FT_OVERRIDES`, `FT_DATA_FRACTION`, `FT_EXCLUDE_SOURCE` and `FT_OUTPUT_DIR`, so sweeps reuse the exact
+training script, and it can be imported without training, so the sanity checks run on the real pipeline. A small
+compatibility layer maps renamed Trainer/TRL options (for example `warmup_ratio` → `warmup_steps` in Transformers 5)
+and reports unsupported ones, so the scripts run across library versions.
+
+**Verified for real** (`tests/integration/test_real_trl.py`, CPU, tiny local Llama, TRL 1.19 / Transformers 5.24 / PEFT 0.22):
+- all 10 sanity checks pass on a healthy pipeline, and they catch three injected bugs: a template without generation
+  markers, a template without an end-of-turn token, and an adapter on the wrong modules;
+- DPO's step-0 loss is exactly ln 2;
+- SFT training runs with the monitor; the diagnostics flag the mode collapse and calibration drift the tiny model
+  really has;
+- the learning curve, rank ablation and successive-halving search all run end to end.
+
+The integration test skips itself when torch / TRL are not installed.
 
 ## Testing methodology
 
@@ -84,6 +129,7 @@ engine/estimator.py  memory / time / cost model
 engine/recommender.py advisor rules
 engine/validator.py  preflight checks
 engine/testing.py    power analysis, test-layer coverage, eval_suite.py / TEST_PLAN.md generators
+engine/fttests.py    ft_checks.py, ft_monitor.py, ft_diagnostics.py, sweep.py generators
 engine/codegen.py    pipeline generator
 engine/dataset.py    dataset profiler
 static/              index.html, styles.css, app.js
