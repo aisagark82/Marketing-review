@@ -9,6 +9,7 @@ import json
 
 from .catalog import model_arch
 from .estimator import FULL_LIKE, resolve_strategy, world_size
+from . import testing
 from .schema import STAGES, defaults
 
 PEFT_LORA = {"lora", "qlora", "dora", "adalora"}
@@ -221,7 +222,7 @@ def gen_train(cfg):
     val, test = float(cfg["val_ratio"]), float(cfg["test_ratio"])
     strat = cfg.get("split_strategy")
     key = cfg.get("split_group_key") or "label"
-    w("# ── splits (test split is written to disk for eval_task.py)")
+    w("# ── splits (test split is written to disk for eval_suite.py)")
     if strat == "temporal":
         w(f"ds = ds.sort({key!r})")
         w(f"n = len(ds); n_test, n_val = int(n * {test}), int(n * {val})")
@@ -652,82 +653,10 @@ def gen_eval(cfg):
     for b in cfg.get("benchmarks") or []:
         if b in EXTERNAL_EVALS:
             L.append(f"# {EXTERNAL_EVALS[b]}")
-    L += ["", "# task metrics on your held-out test split", "python eval_task.py"]
+    L += ["", "# every other test layer + release gates (exits 1 if a gate fails)", "python eval_suite.py"]
     for s in cfg.get("safety_suites") or []:
         L.append(f"# safety suite: {s} (run with its official harness against $MODEL)")
     return "\n".join(L) + "\n"
-
-
-def gen_eval_task(cfg):
-    out = f"outputs/{cfg['project_name']}"
-    model_path = f"{out}/merged" if cfg["method"] in PEFT_LORA | {"vera", "ia3"} else f"{out}/final"
-    metrics = cfg.get("task_metrics") or []
-    judge = cfg.get("judge_enabled")
-    return f'''"""Task-level evaluation on the held-out test split, with bootstrap confidence intervals."""
-import json, os, random, re
-from vllm import LLM, SamplingParams
-
-MODEL = {model_path!r}
-TEST = {out + '/test.jsonl'!r}
-METRICS = {metrics!r}
-N_SAMPLES = {int(cfg.get('eval_num_samples', 1))}
-BOOT = {int(cfg.get('bootstrap_samples', 1000)) if cfg.get('bootstrap_ci') else 0}
-
-rows = [json.loads(l) for l in open(TEST)]
-def prompt_of(r):
-    if "messages" in r:
-        return r["messages"][:-1], r["messages"][-1]["content"]
-    if "instruction" in r:
-        return [{{"role": "user", "content": r["instruction"] + ("\\n\\n" + r["input"] if r.get("input") else "")}}], r["output"]
-    if "prompt" in r:
-        return [{{"role": "user", "content": r["prompt"]}}], r.get("completion") or r.get("answer") or r.get("chosen", "")
-    return [{{"role": "user", "content": r.get("text", "")}}], str(r.get("label", ""))
-
-llm = LLM(MODEL, tensor_parallel_size={max(1, int(cfg.get('serve_tp') or 1))})
-sp = SamplingParams(temperature={float(cfg['eval_temperature'])}, top_p={float(cfg['eval_top_p'])}, max_tokens={int(cfg['eval_max_new_tokens'])}, n=N_SAMPLES)
-pairs = [prompt_of(r) for r in rows]
-outs = llm.chat([p for p, _ in pairs], sp)
-preds = [[c.text for c in o.outputs] for o in outs]
-refs = [ref for _, ref in pairs]
-
-def norm(s):
-    return re.sub(r"\\s+", " ", str(s).strip().lower())
-
-def per_example(metric):
-    if metric in ("exact_match", "accuracy"):
-        return [float(norm(p[0]) == norm(r)) for p, r in zip(preds, refs)]
-    if metric == "json_valid":
-        def ok(s):
-            try:
-                json.loads(s); return 1.0
-            except Exception:
-                return 0.0
-        return [ok(p[0]) for p in preds]
-    if metric == "rouge_l":
-        from rouge_score import rouge_scorer
-        sc = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
-        return [sc.score(r, p[0])["rougeL"].fmeasure for p, r in zip(preds, refs)]
-    if metric == "pass_at_k":
-        raise NotImplementedError("execute completions against unit tests in a sandbox")
-    return None  # corpus-level metrics (bleu, chrf, bertscore, f1, ece) -> use `evaluate`
-
-def ci(xs):
-    if not BOOT:
-        return None
-    means = sorted(sum(random.choices(xs, k=len(xs))) / len(xs) for _ in range(BOOT))
-    return means[int(0.025 * BOOT)], means[int(0.975 * BOOT)]
-
-report = {{}}
-for m in METRICS:
-    xs = per_example(m)
-    if xs:
-        report[m] = {{"mean": sum(xs) / len(xs), "ci95": ci(xs), "n": len(xs)}}
-print(json.dumps(report, indent=2))
-os.makedirs({out + '/eval'!r}, exist_ok=True)
-json.dump({{"metrics": report, "samples": [{{"pred": p[0], "ref": r}} for p, r in zip(preds[:200], refs[:200])]}},
-          open({out + '/eval/task_metrics.json'!r}, "w"), indent=2)
-{"# LLM-as-judge (" + cfg.get("judge_mode", "pairwise_base") + "): send (prompt, base answer, finetuned answer) to " + repr(cfg.get("judge_model") or "<judge>") + ("; swap positions and average to remove position bias" if cfg.get("position_swap") else "") if judge else ""}
-'''
 
 
 def gen_export(cfg):
@@ -854,8 +783,14 @@ def gen_requirements(cfg):
         r.append("lm-eval[vllm]>=0.4.8")
     elif cfg.get("eval_harness") == "lighteval":
         r.append("lighteval[vllm]")
-    if "rouge_l" in (cfg.get("task_metrics") or []):
-        r.append("rouge-score")
+    r.append("jsonschema  # golden-suite JSON-schema assertions")
+    r.append("scipy  # optional: exact Wilcoxon in eval_suite.py")
+    if cfg.get("grounding_backend") == "ragas":
+        r.append("ragas")
+    if cfg.get("red_team_tool") == "garak":
+        r.append("garak")
+    elif cfg.get("red_team_tool") == "pyrit":
+        r.append("pyrit")
     if cfg["objective"] == "classifier":
         r.append("scikit-learn")
     if cfg.get("ptq_method") in ("awq", "gptq", "fp8"):
@@ -873,11 +808,21 @@ def generate(cfg):
         "accelerate_config.yaml": gen_accelerate(cfg),
         "launch.sh": gen_launch(cfg),
         "eval.sh": gen_eval(cfg),
-        "eval_task.py": gen_eval_task(cfg),
+        "eval_suite.py": testing.gen_eval_suite(cfg),
+        "gates.json": testing.gen_gates(cfg),
+        "TEST_PLAN.md": testing.gen_test_plan(cfg),
         "export.sh": gen_export(cfg),
         "serve.sh": gen_serve(cfg),
         "requirements.txt": gen_requirements(cfg),
     }
+    if "golden" in (cfg.get("test_sets") or []):
+        files["tests/golden.example.jsonl"] = testing.gen_golden_example(cfg)
+    if {"custom_safety", "prompt_injection"} & set(cfg.get("safety_suites") or []):
+        files["tests/safety.example.jsonl"] = testing.gen_safety_example(cfg)
+    if cfg.get("load_test"):
+        files["loadtest.sh"] = testing.gen_loadtest(cfg)
+    if cfg.get("red_team_tool", "none") != "none" or set(cfg.get("safety_suites") or []) & {"harmbench", "xstest", "toxicity", "bbq"}:
+        files["redteam.sh"] = testing.gen_redteam(cfg)
     ds = gen_ds_config(cfg)
     if ds:
         files["ds_config.json"] = ds

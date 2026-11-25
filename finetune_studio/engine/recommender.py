@@ -15,6 +15,7 @@ import math
 
 from .catalog import GPUS, MODELS, PERMISSIVE, gpu_spec, model_arch
 from .estimator import FULL_LIKE, estimate, memory_breakdown, resolve_strategy
+from .testing import required_n, winrate_n
 
 METHOD_INFO = {
     "full": ("Full fine-tuning", "Highest ceiling on large, novel data", "Most memory; forgets more; one full checkpoint per task"),
@@ -331,6 +332,64 @@ def hyperparams(cfg, method, obj):
         put("eval_num_samples", 10, "Samples per prompt for pass@k")
 
     dep = cfg.get("deploy_target", "cloud_gpu")
+    a = model_arch(cfg)
+    # ── testing methodology
+    priv, prio = cfg.get("data_privacy"), cfg.get("priority")
+    sets = ["in_dist", "golden", "ood"]
+    if task in ("safety", "tool_use", "rag", "reasoning", "code"):
+        sets.append("adversarial")
+    put("test_sets", sets, "Held-out + golden behaviour suite + OOD" + (" + adversarial cases (attack-prone task)" if "adversarial" in sets else ""))
+    base_p = _n(cfg, "baseline_value", 0.7)
+    base_p = base_p if 0 < base_p < 1 else 0.7
+    mde = 0.02 if prio == "quality" else 0.05 if prio in ("cost", "speed") else 0.03
+    put("mde", mde, f"Smallest change worth acting on for a '{prio}' priority")
+    need = required_n(mde, base_p)
+    cur_ratio = _n(cfg, "test_ratio", 0.05)
+    if N * cur_ratio < need:
+        ratio = min(0.2, math.ceil(need / max(N, 1) * 100) / 100)
+        put("test_ratio", ratio, f"≈{need:,} test items detect a {mde:.2f} change at 80% power"
+            + ("" if N * ratio >= need else f" — still short: collect more test data ({int(N * ratio):,} of {need:,})"))
+    binary = task in ("classification", "reasoning", "extraction", "tool_use")
+    put("sig_test", "mcnemar" if binary else "paired_bootstrap",
+        "Paired binary outcomes → McNemar" if binary else "Continuous / judge scores → paired bootstrap")
+    put("compare_against", ["base", "prompted_baseline"] + (["champion"] if cfg.get("baseline_value") not in (None, "") else []),
+        "A fine-tune must beat the base and a well-prompted baseline" + (" and the current production system" if cfg.get("baseline_value") not in (None, "") else ""))
+    put("perturbations", ["typos", "case", "whitespace", "template"] + (["distractor"] if task in ("rag", "extraction") else []),
+        "Cheap, deterministic robustness probes" + (" + irrelevant-context distractors for retrieval-style inputs" if task in ("rag", "extraction") else ""))
+    put("assertion_types", ["contains", "regex", "exact"] + (["json_schema"] if task in ("extraction", "tool_use") or cfg.get("output_format") == "json" else [])
+        + (["tool_call"] if task == "tool_use" else []) + (["numeric"] if task == "reasoning" else []) + (["judge_rubric"] if task in ("instruction", "summarization", "safety") else []),
+        "Assertion types that match this task's outputs")
+    grounding = {"rag": ["faithfulness", "answer_relevancy", "citation_accuracy", "context_precision"], "summarization": ["faithfulness", "selfcheck"],
+                 "instruction": ["selfcheck"], "domain": ["selfcheck"]}.get(task, [])
+    put("grounding_methods", grounding, "Hallucination checks suited to this task" if grounding else "Outputs are verifiable directly; no grounding layer needed")
+    judge = task not in ("classification", "embedding")
+    put("judge_enabled", judge, "Open-ended outputs need a judge" if judge else "Exact metrics suffice for this task")
+    if judge:
+        put("judge_calibration", True, "Validate the judge against human labels before trusting it")
+        put("position_swap", True, "Removes position bias in pairwise judging")
+    human = judge and (prio == "quality" or task in ("summarization", "safety", "instruction"))
+    put("human_eval", human, "Generative quality is ultimately a human judgement" if human else "Automatic metrics are reliable for this task")
+    if human:
+        put("human_n", max(200, min(1000, winrate_n(mde))), f"≈{winrate_n(mde)} pairwise items detect a {mde:.2f} win-rate edge")
+        put("annotators_per_item", 3, "Three raters allow majority vote and agreement (Fleiss' κ)")
+    suites = []
+    if task in ("safety", "instruction", "rag", "tool_use") or dep in ("cloud_gpu", "multi_tenant"):
+        suites += ["harmbench", "xstest", "custom_safety"]
+    if task in ("rag", "tool_use"):
+        suites.append("prompt_injection")
+    if priv == "regulated":
+        suites.append("pii_leak")
+    put("safety_suites", suites, "Jailbreak + over-refusal for user-facing models" + (", injection for tool/RAG inputs" if "prompt_injection" in suites else "")
+        + (", PII leakage for regulated data" if priv == "regulated" else "") if suites else "Internal non-generative use")
+    put("red_team_tool", "garak" if suites else "none", "Automated probe sweep before release" if suites else "Not needed")
+    put("memorization_test", priv == "regulated", "Regulated data must not be extractable" if priv == "regulated" else "Data is not sensitive")
+    seeds = 3 if (prio == "quality" and a["params"] <= 10) else 1
+    put("train_seeds", seeds, "Small model + quality priority: 3 seeds separate real gains from noise" if seeds > 1 else "One seed; compare effects to the CI width")
+    put("quant_degradation_check", True, "Test the artifact you actually ship")
+    put("load_test", dep != "mobile", "Verify the latency budget under concurrency" if dep != "mobile" else "Benchmark on-device instead")
+    put("gate_max_p95_ms", int(_n(cfg, "latency_p95_ms", 2000)), "Gate on the latency budget from Objective")
+    put("rollout", "ab" if dep in ("cloud_gpu", "multi_tenant") else "shadow", "Shadow first, then an A/B test with sequential monitoring"
+        if dep in ("cloud_gpu", "multi_tenant") else "Shadow traffic validates before any user sees it")
     if dep in ("cpu_edge", "mobile"):
         put("ptq_method", "gguf", "llama.cpp GGUF runs on CPUs and laptops")
         put("gguf_quant", "Q4_K_M", "Best size/quality trade-off for 4-bit GGUF")

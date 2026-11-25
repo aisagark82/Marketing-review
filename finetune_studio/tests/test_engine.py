@@ -13,6 +13,7 @@ from engine.dataset import profile  # noqa: E402
 from engine.estimator import estimate, memory_breakdown  # noqa: E402
 from engine.recommender import recommend  # noqa: E402
 from engine.schema import STAGES, defaults, fields_by_key  # noqa: E402
+from engine.testing import detectable_effect, required_n, summary, winrate_n  # noqa: E402
 from engine.validator import validate  # noqa: E402
 
 OBJECTIVES = ["sft", "cpt", "dpo", "orpo", "simpo", "kto", "cpo", "grpo", "rloo", "ppo", "reward_model", "distill", "classifier"]
@@ -162,6 +163,71 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(p["schema"], "text_label")
         self.assertEqual(p["labels"], {"a": 2, "b": 1})
         self.assertTrue(any("PII" in f["msg"] for f in p["flags"]))
+
+
+class TestingMethodologyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        src = generate(cfg(project_name="t"))["eval_suite.py"]
+        cls.suite = {}
+        exec(compile(src, "eval_suite.py", "exec"), cls.suite)  # stdlib-only at import time
+
+    def test_power_analysis(self):
+        n = required_n(0.03, 0.7)
+        self.assertTrue(3000 < n < 4200, n)          # textbook two-proportion result ≈ 3.6k
+        self.assertAlmostEqual(detectable_effect(n, 0.7), 0.03, delta=0.002)
+        self.assertLess(required_n(0.05, 0.7), required_n(0.02, 0.7))
+        self.assertTrue(700 < winrate_n(0.05) < 900, winrate_n(0.05))
+
+    def test_summary_flags_underpowered_test_set(self):
+        self.assertFalse(summary(cfg(num_examples=2000, test_ratio=0.05))["adequate"])
+        self.assertTrue(summary(cfg(num_examples=100000, test_ratio=0.05))["adequate"])
+
+    def test_recommended_plan_is_task_aware(self):
+        rag = recommend(cfg(task_type="rag", data_privacy="regulated"))["patch"]
+        self.assertIn("faithfulness", rag["grounding_methods"])
+        self.assertIn("prompt_injection", rag["safety_suites"])
+        self.assertIn("pii_leak", rag["safety_suites"])
+        self.assertEqual(recommend(cfg(task_type="classification"))["patch"]["sig_test"], "mcnemar")
+        self.assertIn("prompted_baseline", rag["compare_against"])
+
+    def test_suite_statistics(self):
+        S = self.suite
+        self.assertAlmostEqual(S["mcnemar"]([1] * 10 + [0] * 10, [0] * 10 + [0] * 10), 2 / 2 ** 10, places=6)
+        self.assertEqual(S["mcnemar"]([1, 0], [1, 0]), 1.0)
+        self.assertAlmostEqual(S["cohen_kappa"](list("AABB"), list("AABB")), 1.0)
+        from collections import Counter
+        self.assertAlmostEqual(S["fleiss_kappa"]([Counter(A=3), Counter(B=3)]), 1.0)
+        adj = S["adjust"]({"x": 0.01, "y": 0.04})       # Holm: 0.02, 0.04
+        self.assertAlmostEqual(adj["x"], 0.02)
+        self.assertAlmostEqual(adj["y"], 0.04)
+        diff, ci, p = S["paired_bootstrap"]([1.0] * 50, [0.0] * 50)
+        self.assertEqual(diff, 1.0)
+        self.assertLess(p, 0.01)
+        self.assertLess(S["wilcoxon"]([1.0] * 30, [0.0] * 30), 0.001)
+
+    def test_suite_assertions_and_perturbations(self):
+        S = self.suite
+        check = S["check"]
+        self.assertTrue(check({"type": "numeric", "value": 391, "tol": 0}, "The answer is 391."))
+        self.assertTrue(check({"type": "json_schema", "value": {"type": "object", "required": ["a"]}}, 'Sure: {"a": 1}'))
+        self.assertFalse(check({"type": "json_schema", "value": {"type": "object", "required": ["a"]}}, "no json"))
+        self.assertTrue(check({"type": "tool_call", "value": {"name": "f", "arguments": {"city": "Paris"}}},
+                              '{"name": "f", "arguments": {"city": "paris"}}'))
+        self.assertTrue(check({"type": "not_contains", "value": "x"}, "abc"))
+        import random
+        a = S["perturb"]("hello wonderful world", "typos", random.Random("perturb-typos"))
+        b = S["perturb"]("hello wonderful world", "typos", random.Random("perturb-typos"))
+        self.assertEqual(a, b)
+        self.assertAlmostEqual(S["rouge_l"]("a b c", "a b c"), 1.0)
+
+    def test_generated_testing_files(self):
+        files = generate(cfg(test_sets=["in_dist", "golden"], safety_suites=["custom_safety"], red_team_tool="garak", load_test=True))
+        for f in ("eval_suite.py", "TEST_PLAN.md", "gates.json", "tests/golden.example.jsonl", "tests/safety.example.jsonl", "loadtest.sh", "redteam.sh"):
+            self.assertIn(f, files)
+        for line in files["tests/golden.example.jsonl"].splitlines():
+            json.loads(line)
+        self.assertIn("python eval_suite.py", files["eval.sh"])
 
 
 if __name__ == "__main__":

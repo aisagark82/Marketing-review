@@ -23,6 +23,7 @@ from engine.dataset import profile  # noqa: E402
 from engine.estimator import estimate  # noqa: E402
 from engine.recommender import recommend  # noqa: E402
 from engine.schema import public_schema  # noqa: E402
+from engine.testing import summary as testing_summary  # noqa: E402
 from engine.validator import validate  # noqa: E402
 
 STATIC = ROOT / "static"
@@ -31,7 +32,7 @@ MAX_BODY = 50 * 1024 * 1024
 
 def analyze(cfg):
     cfg = full_config(cfg)
-    return dict(estimate=estimate(cfg), issues=validate(cfg))
+    return dict(estimate=estimate(cfg), issues=validate(cfg), testing=testing_summary(cfg))
 
 
 def export_zip(cfg):

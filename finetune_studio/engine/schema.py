@@ -447,9 +447,20 @@ STAGES = [
              ]),
          ]),
 
-    dict(id="evaluation", title="Evaluation", icon="check-circle",
-         summary="Benchmarks, task metrics, LLM judges, safety and regression checks.",
+    dict(id="evaluation", title="Evaluation & testing", icon="check-circle",
+         summary="Test sets, metrics, behavioural, robustness, judge, human, grounding, safety, statistics, load and release gates.",
          sections=[
+             S("Test sets", desc="Score on more than one distribution: in-distribution alone overstates real-world quality.", fields=[
+                 F("test_sets", "Test sets", "multiselect", ["in_dist", "golden"], "Each set is scored separately and reported side by side.", [
+                     ("in_dist", "Held-out split (in-distribution)"), ("ood", "Out-of-distribution set"), ("golden", "Golden regression suite"),
+                     ("adversarial", "Adversarial / hard cases"), ("production_sample", "Sampled production traffic"), ("temporal", "Newer data than training (temporal)")]),
+                 F("ood_path", "OOD set path", "text", "data/ood.jsonl", show={"test_sets": ["ood"]}),
+                 F("golden_path", "Golden suite path", "text", "tests/golden.jsonl", "Curated cases with assertions; an example file is generated.", show={"test_sets": ["golden"]}),
+                 F("adversarial_path", "Adversarial set path", "text", "data/adversarial.jsonl", show={"test_sets": ["adversarial"]}),
+                 F("prod_sample_path", "Production sample path", "text", "data/prod_sample.jsonl", show={"test_sets": ["production_sample"]}),
+                 F("temporal_path", "Temporal set path", "text", "data/recent.jsonl", show={"test_sets": ["temporal"]}),
+                 F("slice_by", "Slice metrics by", "text", "", "Comma-separated record fields (e.g. language,category). Finds where the model fails.", adv=True),
+             ]),
              S("Harness & benchmarks", [
                  F("eval_harness", "Harness", "select", "lm_eval", "", [("lm_eval", "lm-evaluation-harness"), ("lighteval", "LightEval"), ("custom", "Custom script only")]),
                  F("benchmarks", "Benchmarks", "multiselect", ["mmlu", "ifeval"], "", [
@@ -460,17 +471,79 @@ STAGES = [
                  F("eval_limit", "Limit examples / task", "int", 0, "0 = all.", adv=True),
              ]),
              S("Task metrics", [
-                 F("task_metrics", "Metrics on your test split", "multiselect", ["exact_match", "rouge_l"], "", [
-                     ("accuracy", "Accuracy"), ("f1_macro", "F1 macro"), ("f1_micro", "F1 micro"), ("exact_match", "Exact match"),
+                 F("task_metrics", "Metrics on your test sets", "multiselect", ["exact_match", "rouge_l"], "", [
+                     ("accuracy", "Accuracy"), ("f1_macro", "F1 macro"), ("f1_micro", "F1 micro"), ("exact_match", "Exact match"), ("token_f1", "Token F1"),
                      ("rouge_l", "ROUGE-L"), ("bleu", "BLEU"), ("chrf", "chrF"), ("bertscore", "BERTScore"),
                      ("pass_at_k", "pass@k"), ("json_valid", "JSON validity"), ("perplexity", "Perplexity"), ("calibration", "ECE (calibration)")]),
              ]),
+             S("Behavioural tests (CheckList)", desc="Unit tests for model behaviour — the regression suite that catches what averages hide.", show={"test_sets": ["golden"]}, fields=[
+                 F("behavioral_tests", "Test types", "multiselect", ["mft", "inv", "dir"], "", [
+                     ("mft", "Minimum functionality", "capability unit tests"), ("inv", "Invariance", "perturbation must not change the answer"),
+                     ("dir", "Directional", "a change must move the output a known way")]),
+                 F("assertion_types", "Assertions", "multiselect", ["exact", "contains", "regex", "json_schema"], "", [
+                     ("exact", "Exact"), ("contains", "Contains"), ("not_contains", "Does not contain"), ("regex", "Regex"),
+                     ("json_schema", "JSON schema"), ("numeric", "Numeric ± tolerance"), ("tool_call", "Tool call match"), ("judge_rubric", "Judge rubric")]),
+                 F("min_behavioral_pass", "Required pass rate", "number", 0.95, min=0, max=1, step=0.01),
+             ]),
+             S("Robustness", [
+                 F("perturbations", "Perturbations", "multiselect", ["typos", "case", "whitespace", "template"], "Applied to the in-distribution set; reports the metric drop and answer consistency.", [
+                     ("typos", "Typos"), ("case", "Casing"), ("whitespace", "Whitespace / formatting"), ("template", "Prompt template variants"),
+                     ("distractor", "Irrelevant context"), ("unicode", "Homoglyphs / unicode"), ("paraphrase", "Paraphrase (LLM)"), ("translate", "Translation (LLM)")]),
+                 F("max_robustness_drop", "Max allowed metric drop", "number", 0.05, min=0, max=1, step=0.01),
+                 F("robustness_n", "Examples to perturb", "int", 300, min=10, adv=True),
+                 F("long_context_test", "Long-context retrieval (needle)", "toggle", False, "Plants a fact at several depths and context lengths.", adv=True),
+             ]),
              S("LLM-as-judge", [
                  F("judge_enabled", "Use an LLM judge", "toggle", True),
-                 F("judge_model", "Judge model", "text", "", show={"judge_enabled": [True]}),
-                 F("judge_mode", "Mode", "select", "pairwise_base", "", [("single", "Single answer, rubric score"), ("pairwise_base", "Pairwise vs base model"), ("pairwise_ref", "Pairwise vs reference")], show={"judge_enabled": [True]}),
-                 F("position_swap", "Swap positions (de-bias)", "toggle", True, show={"judge_enabled": [True]}, adv=True),
+                 F("judge_model", "Judge model", "text", "", "Any OpenAI-compatible endpoint (JUDGE_BASE_URL / JUDGE_API_KEY).", show={"judge_enabled": [True]}),
+                 F("judge_mode", "Mode", "select", "pairwise_base", "", [("single", "Single answer, rubric score"), ("pairwise_base", "Pairwise vs baselines"), ("pairwise_ref", "Pairwise vs reference")], show={"judge_enabled": [True]}),
+                 F("position_swap", "Swap positions (de-bias)", "toggle", True, show={"judge_enabled": [True]}),
+                 F("judge_calibration", "Calibrate against human labels", "toggle", True, "Reports judge–human agreement (Cohen's κ). A judge you have not validated is an opinion.", show={"judge_enabled": [True]}),
+                 F("judge_ensemble", "Jury of judges", "toggle", False, "Several judge models, majority vote — reduces self-preference bias.", show={"judge_enabled": [True]}, adv=True),
                  F("judge_rubric", "Rubric", "textarea", "", show={"judge_enabled": [True]}, adv=True),
+             ]),
+             S("Human evaluation", [
+                 F("human_eval", "Run human evaluation", "toggle", False, "Exports a blinded, randomised annotation pack and analyses returned labels."),
+                 F("human_protocol", "Protocol", "select", "sbs", "", [("sbs", "Blind side-by-side"), ("likert", "Likert rubric"), ("ranking", "N-way ranking"), ("error_taxonomy", "Error taxonomy annotation")], show={"human_eval": [True]}),
+                 F("human_n", "Items", "int", 300, "Use the power analysis in the inspector to size this.", show={"human_eval": [True]}, min=10),
+                 F("annotators_per_item", "Annotators per item", "int", 3, show={"human_eval": [True]}, min=1),
+                 F("iaa_metric", "Agreement metric", "select", "fleiss_kappa", "", [("cohen_kappa", "Cohen's κ (2 raters)"), ("fleiss_kappa", "Fleiss' κ"), ("krippendorff_alpha", "Krippendorff's α")], show={"human_eval": [True]}, adv=True),
+                 F("min_iaa", "Min agreement to trust results", "number", 0.6, show={"human_eval": [True]}, adv=True),
+             ]),
+             S("Hallucination & grounding", [
+                 F("grounding_methods", "Methods", "multiselect", [], "", [
+                     ("faithfulness", "Faithfulness to context"), ("answer_relevancy", "Answer relevancy"), ("context_precision", "Context precision"),
+                     ("citation_accuracy", "Citation accuracy"), ("factscore", "Atomic-fact precision (FActScore)"), ("selfcheck", "Self-consistency (SelfCheckGPT)")]),
+                 F("grounding_backend", "Backend", "select", "builtin", "", [("builtin", "Built-in heuristics"), ("ragas", "RAGAS"), ("judge", "LLM judge")], adv=True),
+             ]),
+             S("Safety, security & privacy", [
+                 F("safety_suites", "Suites", "multiselect", [], "", [
+                     ("harmbench", "Jailbreaks (HarmBench)"), ("xstest", "Over-refusal (XSTest)"), ("toxicity", "Toxicity (RealToxicityPrompts)"), ("bbq", "Bias (BBQ)"),
+                     ("prompt_injection", "Prompt injection"), ("pii_leak", "PII leakage"), ("custom_safety", "Custom safety set")]),
+                 F("red_team_tool", "Automated red teaming", "select", "none", "", [("none", "None"), ("garak", "garak"), ("pyrit", "PyRIT"), ("promptfoo", "promptfoo")]),
+                 F("memorization_test", "Memorisation / regurgitation test", "toggle", False, "Prompts with training-example prefixes and measures verbatim continuation."),
+                 F("safety_path", "Custom safety set", "text", "tests/safety.jsonl", "{prompt, should_refuse} records; an example is generated.", show={"safety_suites": ["custom_safety", "prompt_injection"]}),
+             ]),
+             S("Regression & comparisons", desc="Always compare: a fine-tune only earns its cost if it beats the alternatives.", fields=[
+                 F("compare_against", "Compare against", "multiselect", ["base", "prompted_baseline"], "", [
+                     ("base", "Base model"), ("prompted_baseline", "Prompt-engineered baseline (no fine-tune)"),
+                     ("champion", "Current production model"), ("prev_run", "Previous fine-tune run")]),
+                 F("champion_model", "Production model id / path", "text", "", show={"compare_against": ["champion"]}),
+                 F("prev_run_path", "Previous run path", "text", "", show={"compare_against": ["prev_run"]}),
+                 F("forgetting_check", "General-skills regression vs base", "toggle", True, "Runs the same benchmarks on the base to catch catastrophic forgetting."),
+                 F("quant_degradation_check", "Re-test the exported / quantized model", "toggle", True, "Quantization can silently cost points; test what you ship."),
+                 F("overfit_check", "Overfitting diagnostics", "toggle", True, "Train/val loss gap and train-set memorisation.", adv=True),
+             ]),
+             S("Statistical rigor", [
+                 F("sig_test", "Significance test", "select", "paired_bootstrap", "Paired tests: every model answers the same items.", [
+                     ("paired_bootstrap", "Paired bootstrap"), ("mcnemar", "McNemar (binary outcomes)"), ("wilcoxon", "Wilcoxon signed-rank"),
+                     ("permutation", "Paired permutation"), ("none", "None")]),
+                 F("sig_alpha", "α", "number", 0.05, min=0.001, max=0.2),
+                 F("mde", "Minimum effect worth detecting", "number", 0.03, "Absolute difference in the primary metric. Drives the power analysis.", min=0.001, max=0.5),
+                 F("train_seeds", "Training seeds", "int", 1, "Repeat training with different seeds to measure run-to-run variance.", min=1, max=10),
+                 F("bootstrap_ci", "Bootstrap 95% CIs", "toggle", True),
+                 F("bootstrap_samples", "Bootstrap resamples", "int", 1000, show={"bootstrap_ci": [True]}, adv=True),
+                 F("multiple_comparisons", "Multiple-comparison correction", "select", "holm", "", [("none", "None"), ("holm", "Holm–Bonferroni"), ("bh", "Benjamini–Hochberg (FDR)")], adv=True),
              ]),
              S("Decoding for eval", [
                  F("eval_temperature", "Temperature", "number", 0.0, min=0, max=2),
@@ -478,11 +551,24 @@ STAGES = [
                  F("eval_max_new_tokens", "Max new tokens", "int", 1024),
                  F("eval_num_samples", "Samples / prompt", "int", 1, "> 1 for pass@k or self-consistency.", min=1),
              ]),
-             S("Safety & regression", [
-                 F("safety_suites", "Safety suites", "multiselect", [], "", [("toxicity", "Toxicity (RealToxicityPrompts)"), ("harmbench", "Jailbreaks (HarmBench)"), ("bbq", "Bias (BBQ)"), ("xstest", "Over-refusal (XSTest)")]),
-                 F("forgetting_check", "Regression vs base model", "toggle", True, "Runs the same general benchmarks on the base to catch catastrophic forgetting."),
-                 F("bootstrap_ci", "Bootstrap 95% CIs", "toggle", True, adv=True),
-                 F("bootstrap_samples", "Bootstrap resamples", "int", 1000, show={"bootstrap_ci": [True]}, adv=True),
+             S("Performance & load", [
+                 F("load_test", "Load test the served model", "toggle", True),
+                 F("load_tool", "Tool", "select", "vllm_bench", "", [("vllm_bench", "vllm bench serve"), ("genai_perf", "NVIDIA GenAI-Perf"), ("locust", "Locust"), ("k6", "k6")], show={"load_test": [True]}),
+                 F("load_concurrency", "Concurrency", "int", 32, show={"load_test": [True]}, min=1),
+                 F("load_metrics", "Measure", "multiselect", ["ttft", "p95_latency", "throughput", "error_rate"], "", [
+                     ("ttft", "Time to first token"), ("p50_latency", "p50 latency"), ("p95_latency", "p95 latency"), ("throughput", "Tokens / s"),
+                     ("error_rate", "Error rate"), ("cost_per_1k", "Cost / 1k requests")], show={"load_test": [True]}),
+             ]),
+             S("Release gates", desc="Acceptance criteria checked automatically; the suite exits non-zero on failure so CI can block the release.", fields=[
+                 F("gate_primary", "Primary metric ≥ target", "toggle", True, "Uses the target set on the Objective step."),
+                 F("gate_require_significance", "Improvement must be significant", "toggle", True),
+                 F("gate_max_regression", "Max general-benchmark drop", "number", 0.02, min=0, max=1, step=0.005),
+                 F("gate_min_winrate", "Min judge win rate vs baselines", "number", 0.55, min=0, max=1, step=0.01),
+                 F("gate_min_safety", "Min safety pass rate", "number", 0.98, min=0, max=1, step=0.005),
+                 F("gate_max_overrefusal", "Max over-refusal rate", "number", 0.05, min=0, max=1, step=0.01),
+                 F("gate_max_quant_drop", "Max drop after quantization", "number", 0.01, min=0, max=1, step=0.005),
+                 F("gate_max_p95_ms", "Max p95 latency (ms)", "int", None, "Empty = latency budget from Objective."),
+                 F("gate_block", "Fail CI when a gate fails", "toggle", True),
              ]),
          ]),
 
@@ -520,6 +606,13 @@ STAGES = [
              S("Rollout", [
                  F("rollout", "Strategy", "select", "shadow", "", [("shadow", "Shadow"), ("canary", "Canary"), ("ab", "A/B test"), ("blue_green", "Blue-green"), ("direct", "Direct")]),
                  F("canary_pct", "Canary traffic %", "int", 5, show={"rollout": ["canary", "ab"]}),
+                 F("online_metric", "Online success metric", "select", "task_success", "", [
+                     ("task_success", "Task success rate"), ("thumbs_up", "Thumbs-up rate"), ("edit_distance", "User edit distance"),
+                     ("escalation", "Escalation / handoff rate"), ("conversion", "Conversion"), ("retention", "Retention")], show={"rollout": ["canary", "ab", "shadow"]}),
+                 F("online_guardrails", "Guardrail metrics", "multiselect", ["latency", "error_rate", "safety_flags"], "Abort the rollout if any degrades.", [
+                     ("latency", "Latency"), ("error_rate", "Error rate"), ("safety_flags", "Safety flags"), ("cost", "Cost"), ("refusals", "Refusal rate")], show={"rollout": ["canary", "ab", "shadow"]}),
+                 F("sequential_testing", "Sequential testing (always-valid p-values)", "toggle", True, "Lets you peek and stop early without inflating false positives.", show={"rollout": ["ab", "canary"]}),
+                 F("online_min_days", "Minimum duration (days)", "int", 7, "Covers weekly seasonality.", show={"rollout": ["ab", "canary"]}, adv=True),
              ]),
              S("Monitoring & retraining", [
                  F("monitors", "Monitor", "multiselect", ["latency", "feedback", "input_drift"], "", [

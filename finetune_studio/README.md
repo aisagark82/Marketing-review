@@ -22,7 +22,7 @@ python3 -m unittest discover tests
 | **6 Hyperparameters** | 9 LR schedules incl. WSD, 11 optimizers (AdamW fused/8-bit/paged/4-bit, Adafactor, Lion, schedule-free, Muon…), batching, precision incl. FP8, gradient checkpointing, eval/save cadence, early stopping, determinism |
 | **7 Compute** | 12 GPU types, nodes, DDP / FSDP1/2 / ZeRO-1/2/3 / offload, sequence parallelism, launcher, SLURM / K8s / Ray / SageMaker / Vertex…, spot |
 | **8 Tracking** | W&B / MLflow / TensorBoard / Comet, run-name templates, hub push, data versioning, environment capture |
-| **9 Evaluation** | lm-eval / LightEval, 15 benchmarks, task metrics, LLM-as-judge (pairwise, position swap), decoding, safety suites, regression vs base, bootstrap CIs |
+| **9 Evaluation & testing** | see [Testing methodology](#testing-methodology) below |
 | **10 Optimize & export** | merge, AWQ / GPTQ / GGUF / FP8 / HQQ / bnb, ONNX / TensorRT-LLM / MLX / OpenVINO, pruning, model card |
 | **11 Deploy & monitor** | vLLM / SGLang / TGI / TRT-LLM / llama.cpp / Ollama, multi-LoRA, FP8 KV cache, speculative decoding (n-gram / draft / EAGLE-3), guardrails, shadow/canary/A-B rollout, drift/feedback monitors, retraining triggers |
 
@@ -42,6 +42,38 @@ python3 -m unittest discover tests
 * **UX:** Essential/Expert modes (expert settings stay hidden unless changed), a ⌘K search across every setting, presets,
   modified-from-default markers with one-click reset, light/dark themes, autosave, and JSON import/export.
 
+## Testing methodology
+
+The Evaluation & testing step treats a fine-tuned model like software under test. The rule is to always
+compare against cheaper alternatives, on several distributions, with paired statistics, and to gate the release
+in CI.
+
+| Layer | What it checks | How |
+|---|---|---|
+| Test sets | In-distribution, OOD, temporal, adversarial, sampled production, golden suite | Each scored separately; slice metrics by any field |
+| Baselines | Base model, **prompt-engineered baseline**, production model, previous run | Same items, same decoding (paired design) |
+| Task metrics | EM, accuracy, token F1, ROUGE-L, JSON validity, pass@k, BLEU / chrF / BERTScore, ECE | Per-item scores feed the significance tests |
+| Behavioural (CheckList) | Minimum-functionality, invariance and directional tests | Assertions: exact, contains, not-contains, regex, JSON schema, numeric ± tol, tool-call match, judge rubric |
+| Robustness | Typos, casing, whitespace, prompt templates, distractor context, homoglyphs, LLM paraphrase / translation | Metric drop + answer consistency, deterministic seeds |
+| LLM-as-judge | Pairwise or rubric scoring | Position swap, optional jury, **calibrated against human labels (Cohen's κ + raw agreement)** |
+| Human evaluation | Side-by-side, Likert, ranking, error taxonomy | Blinded randomised pack → labels → win rate + Fleiss' / Cohen's κ |
+| Hallucination & grounding | Faithfulness, answer relevancy, context precision, citation accuracy, SelfCheckGPT, FActScore | Built-in heuristics, RAGAS export or judge |
+| Safety & privacy | HarmBench, XSTest over-refusal, toxicity, BBQ, prompt injection (canary), PII leakage, memorisation | Custom sets in the suite + garak / PyRIT / promptfoo |
+| Regression | General-skills drop vs base (catastrophic forgetting), quantized vs bf16, overfitting, seed variance | lm-eval deltas, paired tests, trainer_state analysis |
+| Statistics | Paired bootstrap, McNemar, Wilcoxon, permutation; Holm / BH correction; bootstrap CIs | **Power analysis** sizes the test set and human-eval sample for your minimum detectable effect |
+| Load | TTFT, p50/p95 latency, throughput, error rate | vllm bench / GenAI-Perf / Locust / k6 |
+| Release gates | Primary target, significance, regression, win rate, behavioural, robustness, safety, over-refusal, quantization, latency, human agreement | `eval_suite.py` exits 1 on failure so CI blocks the release |
+| Online | Shadow → canary → A/B | Online success metric, guardrail metrics, sequential testing, minimum duration |
+
+The Advisor recommends a test plan per task. For example, a RAG task gets faithfulness and citation checks plus
+prompt-injection tests; classification gets McNemar; regulated data gets PII-leak and memorisation probes. It also
+sizes the held-out split so the minimum effect you care about is detectable. The side panel shows the detectable
+change and which test layers are enabled.
+
+Generated files: `eval_suite.py` (all layers, two-pass so each model loads once, cached outputs, `--only` / `--limit`),
+`TEST_PLAN.md`, `gates.json`, `tests/golden.example.jsonl`, `tests/safety.example.jsonl`, `loadtest.sh`,
+`redteam.sh`. Judge and paraphrase calls use any OpenAI-compatible endpoint (`JUDGE_BASE_URL`, `JUDGE_API_KEY`).
+
 ## Layout
 
 ```
@@ -51,6 +83,7 @@ engine/catalog.py    model architectures and GPU specs
 engine/estimator.py  memory / time / cost model
 engine/recommender.py advisor rules
 engine/validator.py  preflight checks
+engine/testing.py    power analysis, test-layer coverage, eval_suite.py / TEST_PLAN.md generators
 engine/codegen.py    pipeline generator
 engine/dataset.py    dataset profiler
 static/              index.html, styles.css, app.js

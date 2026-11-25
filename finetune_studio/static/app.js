@@ -33,6 +33,8 @@ const ICONS = {
   arrowL: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   chevron: '<path d="m9 18 6-6-6-6"/>',
+  circle: '<circle cx="12" cy="12" r="9"/>',
+  flask: '<path d="M9 3h6M10 3v6L4.5 18.5A2 2 0 0 0 6.2 21.5h11.6a2 2 0 0 0 1.7-3L14 9V3"/><path d="M7 15h10"/>',
 };
 const icon = (n) => `<i data-icon="${n}"><svg viewBox="0 0 24 24">${ICONS[n] || ''}</svg></i>`;
 function hydrateIcons(root = document) {
@@ -272,7 +274,7 @@ function renderStage() {
   st.sections.forEach((sec, si) => {
     const card = document.createElement('section');
     card.className = 'card'; card.dataset.sec = `${st.id}:${si}`;
-    card.innerHTML = `<div class="card-head"><h3>${esc(sec.title)}</h3></div><div class="card-body"><div class="grid"></div></div>`;
+    card.innerHTML = `<div class="card-head"><div><h3>${esc(sec.title)}</h3>${sec.desc ? `<p class="card-desc">${esc(sec.desc)}</p>` : ''}</div></div><div class="card-body"><div class="grid"></div></div>`;
     const grid = $('.grid', card);
     sec.fields.forEach((f) => { grid.append(fieldEl(f)); if (f.adv && S.mode !== 'expert' && matches(sec.show, S.cfg) && matches(f.show, S.cfg) && !isModified(f.key)) hiddenAdv++; });
     cards.append(card);
@@ -413,10 +415,25 @@ function renderInspector() {
         ${e.adapter_mb != null ? `<div class="stat" style="grid-column:1/-1"><div class="k">Adapter artifact</div><div class="v">${e.adapter_mb < 1 ? (e.adapter_mb * 1024).toFixed(0) + ' KB' : e.adapter_mb.toFixed(0) + ' MB'}</div><div class="s">vs ${(e.params_b * 2).toFixed(1)} GB for a full bf16 checkpoint</div></div>` : ''}
       </div>
     </div>
+    ${testPlanHtml(S.analysis.testing)}
     <div class="ins-section">
       <div class="ins-title"><span>Preflight checks</span><span>${errs ? `<span class="pill err">${errs}</span>` : ''}</span></div>
       <div class="issues">${S.analysis.issues.length ? S.analysis.issues.map((i, n) => `<button class="issue ${i.level}" data-issue="${n}"><span class="ic">${icon(i.level === 'error' ? 'error' : i.level === 'warn' ? 'alert' : 'info')}</span><span>${esc(i.msg)}<small>${esc((S.schema.stages.find((s) => s.id === (S.stageOf[i.key] || i.stage)) || {}).title || '')} › ${esc(S.fields[i.key]?.label || i.key)}</small></span></button>`).join('')
         : `<div class="allclear">${icon('check-circle')}All checks pass — ready to generate.</div>`}</div>
+    </div>`;
+}
+
+function testPlanHtml(t) {
+  if (!t) return '';
+  const pts = (x) => (x * 100).toFixed(x < 0.1 ? 1 : 0) + ' pts';
+  return `<div class="ins-section">
+      <div class="ins-title"><span>Test plan</span><span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">${t.covered}/${t.coverage.length} layers</span></div>
+      <div class="stats">
+        <div class="stat" data-tip="Held-out items = num_examples × test_ratio"><div class="k">Held-out test items</div><div class="v">${t.n_test.toLocaleString()}</div><div class="s">need ≈${t.required_n.toLocaleString()} for ${pts(t.mde)}</div></div>
+        <div class="stat" data-tip="Smallest absolute change in the primary metric detectable at α=${t.alpha}, 80% power, baseline ${t.baseline_p.toFixed(2)}">
+          <div class="k">Detectable change</div><div class="v" style="color:${t.adequate ? 'var(--ok)' : 'var(--warn)'}">± ${pts(t.detectable)}</div><div class="s">${t.adequate ? 'adequately powered' : 'under-powered'}</div></div>
+      </div>
+      <ul class="coverage">${t.coverage.map((c) => `<li><button class="${c.on ? 'on' : ''}" data-jump="${esc(c.key)}" title="${c.on ? 'Enabled' : 'Not planned'} — click to configure">${icon(c.on ? 'check' : 'circle')}<span>${esc(c.label)}</span></button></li>`).join('')}</ul>
     </div>`;
 }
 
@@ -465,14 +482,7 @@ function renderAdvice() {
         ${t.id !== top && t.fits ? `<button class="btn sm" style="margin-top:8px" data-force="${t.id}">Use ${esc(t.name)} instead</button>` : ''}
       </div></div>`).join('')}
     <h4>Settings to apply</h4>
-    <table class="tbl"><thead><tr><th style="width:28px"><input type="checkbox" id="advAll" checked aria-label="Select all"></th><th>Setting</th><th>Change</th><th>Why</th></tr></thead><tbody>
-    ${r.rationale.map((x, i) => {
-      const cur = S.cfg[x.key]; const changed = !same(cur, x.value);
-      return `<tr style="${changed ? '' : 'opacity:.55'}"><td><input type="checkbox" data-row="${i}" ${changed ? 'checked' : ''} aria-label="Apply ${esc(x.key)}"></td>
-        <td>${esc(S.fields[x.key]?.label || x.key)}<div class="muted mono" style="font-size:11px">${esc(x.key)}</div></td>
-        <td>${changed ? `<span class="from">${esc(fmtVal(cur))}</span> → ` : ''}<span class="to">${esc(fmtVal(x.value))}</span>${changed ? '' : ' <span class="muted">(already set)</span>'}</td>
-        <td class="why">${esc(x.why)}</td></tr>`;
-    }).join('')}</tbody></table>
+    ${adviceTable(r.rationale)}
     <h4>Base models that fit (${r.models.size_band[0]}–${r.models.size_band[1]}B suggested for your constraints)</h4>
     <table class="tbl"><thead><tr><th>Model</th><th>Params</th><th>Licence</th><th>Memory/GPU</th><th></th></tr></thead><tbody>
     ${r.models.models.map((mm) => `<tr><td class="mono">${esc(mm.id)}${mm.id === A.cfg.base_model ? ' <span class="badge top">current</span>' : ''}</td><td class="mono">${mm.params_b}B</td><td>${esc(mm.license)}</td>
@@ -485,6 +495,24 @@ function renderAdvice() {
       <div class="stat"><div class="k">Trainable</div><div class="v">${fmtB(e.trainable_params)}</div><div class="s">${e.trainable_pct.toFixed(2)}%</div></div>
     </div>`;
   updateAdvCount();
+}
+function adviceTable(rows) {
+  const order = S.schema.stages.map((st) => st.id);
+  const titles = Object.fromEntries(S.schema.stages.map((st) => [st.id, st.title]));
+  const items = rows.map((x, i) => ({ ...x, i, stage: S.stageOf[x.key] || 'objective', changed: !same(S.cfg[x.key], x.value) }));
+  const row = (x) => `<tr style="${x.changed ? '' : 'opacity:.55'}"><td><input type="checkbox" data-row="${x.i}" ${x.changed ? 'checked' : ''} aria-label="Apply ${esc(x.key)}"></td>
+    <td>${esc(S.fields[x.key]?.label || x.key)}<div class="muted mono" style="font-size:11px">${esc(x.key)}</div></td>
+    <td>${x.changed ? `<span class="from">${esc(fmtVal(S.cfg[x.key]))}</span> → ` : ''}<span class="to">${esc(fmtVal(x.value))}</span></td>
+    <td class="why">${esc(x.why)}</td></tr>`;
+  const changed = items.filter((x) => x.changed), same_ = items.filter((x) => !x.changed);
+  let html = `<table class="tbl"><thead><tr><th style="width:28px"><input type="checkbox" id="advAll" checked aria-label="Select all"></th><th>Setting</th><th>Change</th><th>Why</th></tr></thead>`;
+  for (const st of order) {
+    const g = changed.filter((x) => x.stage === st);
+    if (g.length) html += `<tbody><tr class="grp"><td colspan="4">${esc(titles[st])} <span class="muted">· ${g.length} change${g.length > 1 ? 's' : ''}</span></td></tr>${g.map(row).join('')}</tbody>`;
+  }
+  if (!changed.length) html += '<tbody><tr><td colspan="4" class="muted">Your configuration already matches every recommendation.</td></tr></tbody>';
+  if (same_.length) html += `<tbody><tr class="grp"><td colspan="4"><button class="btn sm ghost" id="advSame">${icon('chevron')}${same_.length} already match your config</button></td></tr></tbody><tbody id="advSameRows" hidden>${same_.map(row).join('')}</tbody>`;
+  return html + '</table>';
 }
 function updateAdvCount() {
   const n = $$('#advResults input[data-row]:checked').length;
@@ -501,7 +529,7 @@ function applyAdvice() {
 
 // ───────────────────────── generate view ─────────────────────────
 function highlight(code, file) {
-  const yaml = /\.ya?ml$/.test(file), json = file.endsWith('.json'), txt = file.endsWith('.txt');
+  const yaml = /\.ya?ml$/.test(file), json = /\.jsonl?$/.test(file), txt = /\.(txt|md)$/.test(file);
   const KW = 'def|return|if|else|elif|for|in|import|from|as|try|except|with|class|None|True|False|and|or|not|lambda|raise|while|is|pass|export|then|fi|true|false|null|set';
   const re = new RegExp(`(${json ? '(?!)' : '#.*$'})|("""[\\s\\S]*?"""|"(?:[^"\\\\\\n]|\\\\.)*"|'(?:[^'\\\\\\n]|\\\\.)*')|(\\b\\d+(?:\\.\\d+)?(?:e-?\\d+)?\\b)|(\\b(?:${KW})\\b)|(${yaml ? '^\\s*[\\w.-]+(?=:)' : '(?!)'})`, 'gm');
   return code.split('\n').map((line) => {
@@ -532,7 +560,10 @@ async function renderGenerate() {
   if (!S.files[S.fileTab]) S.fileTab = 'train.py';
   const DESC = { 'train.py': 'Training entry point', 'config.yaml': 'Full configuration (source of truth)', 'accelerate_config.yaml': 'Accelerate launcher config',
     'ds_config.json': 'DeepSpeed ZeRO config', 'launch.sh': 'Launch command', 'eval.sh': 'Benchmarks + regression vs base', 'eval_task.py': 'Task metrics on your test split',
-    'export.sh': 'Merge, quantize, convert', 'serve.sh': 'Serving + rollout', 'requirements.txt': 'Dependencies' };
+    'export.sh': 'Merge, quantize, convert', 'serve.sh': 'Serving + rollout', 'requirements.txt': 'Dependencies',
+    'eval_suite.py': 'All test layers, paired significance tests, release gates (exit 1 on failure)', 'TEST_PLAN.md': 'Testing methodology & acceptance criteria',
+    'gates.json': 'Release-gate thresholds', 'loadtest.sh': 'Latency / throughput load test', 'redteam.sh': 'Safety suites & automated red teaming',
+    'tests/golden.example.jsonl': 'Example behavioural tests (MFT / INV / DIR)', 'tests/safety.example.jsonl': 'Example safety & prompt-injection cases' };
   const draw = () => {
     $('.tabs', main).innerHTML = Object.keys(S.files).map((f) => `<button class="tab ${f === S.fileTab ? 'on' : ''}" role="tab" aria-selected="${f === S.fileTab}" data-file="${esc(f)}">${esc(f)}</button>`).join('');
     const content = S.files[S.fileTab];
@@ -637,10 +668,13 @@ function wireChrome() {
     if (!e.target.closest('.menu-wrap')) $$('.menu').forEach((m) => (m.hidden = true));
     const g = e.target.closest('[data-goto], .rail [data-stage]');
     if (g) goto(g.dataset.goto || g.dataset.stage);
+    const jb = e.target.closest('[data-jump]');
+    if (jb) flashField(jb.dataset.jump);
     const iss = e.target.closest('[data-issue]');
     if (iss) flashField(S.analysis.issues[+iss.dataset.issue].key);
     const th = e.target.closest('.tech-head');
     if (th) { const body = th.nextElementSibling; body.hidden = !body.hidden; th.setAttribute('aria-expanded', !body.hidden); }
+    if (e.target.closest('#advSame')) { const t = $('#advSameRows'); t.hidden = !t.hidden; }
     const fb = e.target.closest('[data-force]');
     if (fb) { A.force = fb.dataset.force; runAdvisor.now(); }
     const mb = e.target.closest('[data-model]');

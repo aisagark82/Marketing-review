@@ -2,6 +2,7 @@
 
 from .catalog import gpu_spec, model_arch
 from .estimator import FULL_LIKE, estimate
+from .testing import summary as test_summary
 
 PREF = {"dpo", "orpo", "simpo", "kto", "cpo", "reward_model"}
 ONLINE = {"grpo", "rloo", "ppo"}
@@ -147,6 +148,56 @@ def validate(cfg):
         add("error", "deploy", "multi_lora", "Multi-LoRA serving requires an adapter method.")
     if _n(cfg, "serve_max_len", 8192) > a["ctx"] and cfg.get("rope_scaling", "none") == "none":
         add("warn", "deploy", "serve_max_len", "Serving length exceeds the model's native context.")
+
+    # ── testing methodology
+    ts = test_summary(cfg)
+    sets = set(cfg.get("test_sets") or [])
+    ca = set(cfg.get("compare_against") or [])
+    task = cfg.get("task_type")
+    if "in_dist" in sets and ts["n_test"] and not ts["adequate"]:
+        add("warn", "evaluation", "mde", f"Test set ({ts['n_test']:,} items) can only detect changes ≥ {ts['detectable']:.3f}; "
+            f"detecting {ts['mde']:.3f} needs ≈{ts['required_n']:,}. Enlarge test_ratio, add test data or raise the MDE.")
+    if not sets:
+        add("error", "evaluation", "test_sets", "No test sets selected.")
+    if not (sets & {"ood", "temporal", "production_sample"}):
+        add("info", "evaluation", "test_sets", "Only in-distribution testing: add an OOD, temporal or production sample to measure generalisation.")
+    if "golden" not in sets:
+        add("info", "evaluation", "test_sets", "No golden behavioural suite: specific regressions can hide inside a stable average.")
+    if "prompted_baseline" not in ca:
+        add("info", "evaluation", "compare_against", "Compare against a prompt-engineered baseline: the fine-tune must beat the cheap alternative.")
+    if cfg.get("gate_require_significance") and cfg.get("sig_test") == "none":
+        add("error", "evaluation", "sig_test", "The significance gate needs a significance test.")
+    if cfg.get("sig_test") == "mcnemar" and not ({"exact_match", "accuracy", "json_valid"} & set(cfg.get("task_metrics") or [])):
+        add("warn", "evaluation", "sig_test", "McNemar needs binary per-item outcomes; use a paired bootstrap for continuous metrics.")
+    if cfg.get("judge_enabled") and not cfg.get("judge_calibration"):
+        add("info", "evaluation", "judge_calibration", "An uncalibrated judge: validate it against ~100–200 human labels before trusting win rates.")
+    if cfg.get("judge_enabled") and not cfg.get("judge_model"):
+        add("warn", "evaluation", "judge_model", "Choose a judge model (ideally a different family from the model under test to limit self-preference).")
+    if cfg.get("judge_enabled") and cfg.get("judge_mode") != "single" and not cfg.get("position_swap"):
+        add("warn", "evaluation", "position_swap", "Pairwise judges have position bias; enable position swapping.")
+    if cfg.get("human_eval"):
+        if int(_n(cfg, "annotators_per_item", 1)) < 2:
+            add("warn", "evaluation", "annotators_per_item", "With one annotator per item, agreement cannot be measured.")
+        if int(_n(cfg, "human_n", 0)) < ts["winrate_n"]:
+            add("info", "evaluation", "human_n", f"{int(_n(cfg, 'human_n', 0))} items gives limited power; ≈{ts['winrate_n']} detect a {ts['mde']:.2f} win-rate edge.")
+    if task == "rag" and not cfg.get("grounding_methods"):
+        add("warn", "evaluation", "grounding_methods", "RAG task without grounding/faithfulness tests.")
+    if task in ("tool_use", "extraction") and not ({"json_schema", "tool_call"} & set(cfg.get("assertion_types") or [])):
+        add("warn", "evaluation", "assertion_types", "Structured-output task: add JSON-schema / tool-call assertions.")
+    if cfg.get("ptq_method", "none") != "none" and not cfg.get("quant_degradation_check"):
+        add("warn", "evaluation", "quant_degradation_check", "You ship a quantized model but only test the bf16 one.")
+    if cfg.get("data_privacy") == "regulated" and not ("pii_leak" in (cfg.get("safety_suites") or []) or cfg.get("memorization_test")):
+        add("warn", "evaluation", "memorization_test", "Regulated data: test for PII leakage and training-data memorisation.")
+    if task in ("safety", "tool_use", "rag") and not cfg.get("safety_suites") and cfg.get("red_team_tool", "none") == "none":
+        add("warn", "evaluation", "safety_suites", f"{task} models are attack surfaces: add jailbreak / prompt-injection tests.")
+    if cfg.get("gate_primary") and cfg.get("target_value") in (None, ""):
+        add("info", "objective", "target_value", "The primary-metric gate is skipped until you set a target value.")
+    if cfg.get("gate_min_winrate") is not None and _n(cfg, "gate_min_winrate", 0.5) > 0 and not cfg.get("judge_enabled"):
+        add("info", "evaluation", "judge_enabled", "The win-rate gate needs the LLM judge.")
+    if int(_n(cfg, "train_seeds", 1)) == 1 and _n(cfg, "mde", 0.03) < 0.02:
+        add("info", "evaluation", "train_seeds", "Effects under 2 points are often within seed-to-seed variance; train ≥3 seeds.")
+    if cfg.get("split_strategy") == "random" and "temporal" in sets:
+        add("info", "data", "split_strategy", "A random split leaks future data into training; use a temporal split with the temporal test set.")
 
     order = {"error": 0, "warn": 1, "info": 2}
     issues.sort(key=lambda i: order[i["level"]])
