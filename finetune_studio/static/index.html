@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fine-Tune Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script>
+    try { const t = localStorage.getItem('fts-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18 L10 6 L14 13 L16 10 L20 18 Z"/></svg></span>
+      <span class="brand-name">Fine-Tune Studio</span>
+      <span class="divider"></span>
+      <input id="projectName" class="project-name" aria-label="Project name" spellcheck="false">
+    </div>
+    <div class="top-actions">
+      <button id="searchBtn" class="search-trigger" title="Search every setting (Ctrl/⌘ K)">
+        <i data-icon="search"></i><span>Search settings</span><kbd>⌘K</kbd>
+      </button>
+      <div class="seg" id="modeSeg" role="radiogroup" aria-label="Detail level">
+        <button data-mode="essential" role="radio">Essential</button>
+        <button data-mode="expert" role="radio">Expert</button>
+      </div>
+      <div class="menu-wrap">
+        <button id="presetBtn" class="btn ghost"><i data-icon="layers"></i><span class="lbl">Presets</span></button>
+        <div id="presetMenu" class="menu" hidden></div>
+      </div>
+      <button id="advisorBtn" class="btn primary"><i data-icon="sparkles"></i><span class="lbl">Advisor</span></button>
+      <button id="exportBtn" class="btn"><i data-icon="download"></i><span class="lbl">Export</span></button>
+      <div class="menu-wrap">
+        <button id="moreBtn" class="icon-btn" aria-label="More"><i data-icon="more"></i></button>
+        <div id="moreMenu" class="menu right" hidden>
+          <button data-act="import"><i data-icon="upload"></i>Import config (JSON)</button>
+          <button data-act="exportJson"><i data-icon="file"></i>Download config (JSON)</button>
+          <button data-act="theme"><i data-icon="contrast"></i>Toggle theme</button>
+          <button data-act="reset" class="danger"><i data-icon="reset"></i>Reset all to defaults</button>
+        </div>
+      </div>
+      <input type="file" id="importFile" accept=".json,application/json" hidden>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="rail" id="rail" aria-label="Lifecycle stages"></nav>
+    <main class="main" id="main" tabindex="-1"></main>
+    <aside class="inspector" id="inspector" aria-label="Run estimate and preflight checks"></aside>
+  </div>
+
+  <!-- Advisor -->
+  <div class="overlay" id="advisor" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="advTitle">
+      <div class="sheet-head">
+        <div>
+          <h2 id="advTitle"><i data-icon="sparkles"></i>Fine-tuning advisor</h2>
+          <p class="muted">Answer a few questions; recommendations update live. Apply only what you agree with.</p>
+        </div>
+        <button class="icon-btn" data-close aria-label="Close"><i data-icon="x"></i></button>
+      </div>
+      <div class="sheet-body adv-grid">
+        <section class="adv-inputs" id="advInputs"></section>
+        <section class="adv-results" id="advResults"><div class="loading">Thinking…</div></section>
+      </div>
+      <div class="sheet-foot">
+        <span class="muted" id="advCount"></span>
+        <div class="row">
+          <button class="btn ghost" data-close>Cancel</button>
+          <button class="btn primary" id="advApply"><i data-icon="check"></i>Apply selected</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Command palette -->
+  <div class="overlay top" id="palette" hidden>
+    <div class="palette" role="dialog" aria-modal="true" aria-label="Search settings">
+      <div class="palette-input"><i data-icon="search"></i><input id="paletteInput" placeholder="Search 230+ settings… (e.g. rank, zero, beta, gguf)" autocomplete="off"></div>
+      <ul id="paletteList" role="listbox"></ul>
+      <div class="palette-foot"><kbd>↑↓</kbd> navigate <kbd>↵</kbd> jump <kbd>esc</kbd> close</div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
